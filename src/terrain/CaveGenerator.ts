@@ -1,4 +1,4 @@
-import { PerlinNoise } from '../noise/PerlinNoise';
+import { SimplexNoise } from '../noise/SimplexNoise';
 import { SeededRandom } from '../noise/SeededRandom';
 import { Chunk } from './Chunk';
 import { BlockType } from './BlockTypes';
@@ -9,16 +9,16 @@ import {
 } from '../constants';
 
 export class CaveGenerator {
-  private dirNoiseX: PerlinNoise;
-  private dirNoiseY: PerlinNoise;
-  private radiusNoise: PerlinNoise;
+  private dirNoiseX: SimplexNoise;
+  private dirNoiseY: SimplexNoise;
+  private radiusNoise: SimplexNoise;
   private seed: number;
 
   constructor(seed: number) {
     this.seed = seed;
-    this.dirNoiseX = new PerlinNoise(seed);
-    this.dirNoiseY = new PerlinNoise(seed + 1);
-    this.radiusNoise = new PerlinNoise(seed + 3);
+    this.dirNoiseX = new SimplexNoise(seed);
+    this.dirNoiseY = new SimplexNoise(seed + 1);
+    this.radiusNoise = new SimplexNoise(seed + 3);
   }
 
   generate(chunk: Chunk): void {

@@ -1,4 +1,4 @@
-import { FractalNoise } from '../noise/PerlinNoise';
+import { FractalNoise } from '../noise/SimplexNoise';
 import { Chunk } from './Chunk';
 import { BlockType } from './BlockTypes';
 import { BiomeType } from './BiomeTypes';
