@@ -1,9 +1,10 @@
 import { vec3 } from 'gl-matrix';
 import { WebGPUContext } from './renderer/WebGPUContext';
-import { RenderPipeline } from './renderer/RenderPipeline';
+import { DeferredPipeline } from './renderer/DeferredPipeline';
 import { TextureAtlas } from './renderer/TextureAtlas';
 import { FlyCamera } from './camera/FlyCamera';
 import { ChunkManager } from './terrain/ChunkManager';
+import { DayNightCycle } from './world/DayNightCycle';
 import { HUD } from './ui/HUD';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, FOG_START_RATIO, FOG_END_RATIO } from './constants';
 
@@ -28,9 +29,10 @@ async function main() {
   // Initial resize
   ctx.resize();
 
-  const pipeline = new RenderPipeline(ctx);
+  const dayNightCycle = new DayNightCycle();
+  const pipeline = new DeferredPipeline(ctx, dayNightCycle);
   const atlas = new TextureAtlas(ctx);
-  pipeline.setAtlasTexture(atlas.texture);
+  pipeline.setAtlasTexture(atlas.texture, atlas.materialTexture);
 
   let seed = 0;
   const seedInput = document.getElementById('seed-input') as HTMLInputElement;
@@ -60,6 +62,17 @@ async function main() {
     chunkManager.renderDistance = val;
   });
 
+  const timeSlider = document.getElementById('time-slider') as HTMLInputElement;
+  const timeVal = document.getElementById('time-val')!;
+  timeSlider.addEventListener('input', () => {
+    const t = parseInt(timeSlider.value) / 100;
+    dayNightCycle.setTime(t);
+    timeVal.textContent = dayNightCycle.getTimeString();
+  });
+  timeSlider.addEventListener('dblclick', () => {
+    dayNightCycle.paused = false;
+  });
+
   // Responsive canvas
   window.addEventListener('resize', () => ctx.resize());
 
@@ -73,12 +86,19 @@ async function main() {
 
     ctx.resize();
     camera.update(dt);
+    dayNightCycle.update(dt);
+    if (!dayNightCycle.paused) {
+      timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
+      timeVal.textContent = dayNightCycle.getTimeString();
+    }
 
     const viewProj = camera.getViewProjection(ctx.aspectRatio);
+    const projection = camera.getProjection();
     const fogDist = chunkManager.renderDistance * CHUNK_WIDTH;
 
     pipeline.updateCamera(
       viewProj,
+      projection,
       camera.position as Float32Array,
       fogDist * FOG_START_RATIO,
       fogDist * FOG_END_RATIO,
@@ -89,7 +109,7 @@ async function main() {
     const drawCalls = chunkManager.getDrawCalls();
     pipeline.render(drawCalls);
 
-    hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed());
+    hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed(), dayNightCycle.getTimeString());
 
     requestAnimationFrame(frame);
   }

@@ -40,7 +40,7 @@ export const ATLAS_TILES = 16;
 export const ATLAS_PIXEL_SIZE = TILE_SIZE * ATLAS_TILES;
 
 // Rendering
-export const DEFAULT_RENDER_DISTANCE = 8;
+export const DEFAULT_RENDER_DISTANCE = 10;
 export const CHUNKS_PER_FRAME = 2;
 
 // Camera
@@ -54,3 +54,29 @@ export const CAMERA_FAR = 1000.0;
 // Fog
 export const FOG_START_RATIO = 0.75;
 export const FOG_END_RATIO = 1.0;
+
+// G-Buffer formats
+export const GBUFFER_ALBEDO_FORMAT: GPUTextureFormat = 'rgba8unorm';     // RGB=albedo, A=emissive
+export const GBUFFER_NORMAL_FORMAT: GPUTextureFormat = 'rgba16float';    // RGB=world normal
+export const GBUFFER_MATERIAL_FORMAT: GPUTextureFormat = 'rgba8unorm';   // R=roughness, G=metallic, B=AO
+export const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
+export const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
+
+// Shadow mapping
+export const SHADOW_CASCADE_COUNT = 3;
+export const SHADOW_MAP_SIZE = 2048;
+export const SHADOW_CASCADE_SPLITS = [20, 60, 160]; // block distances
+
+// SSAO
+export const SSAO_KERNEL_SIZE = 16;
+export const SSAO_NOISE_SIZE = 4;
+export const SSAO_RADIUS = 1.5;
+export const SSAO_BIAS = 0.025;
+
+// Bloom
+export const BLOOM_MIP_LEVELS = 5;
+export const BLOOM_THRESHOLD = 1.0;
+export const BLOOM_INTENSITY = 0.3;
+
+// Day-Night Cycle
+export const DAY_DURATION_SECONDS = 1200; // 20 minutes real time = 1 game day

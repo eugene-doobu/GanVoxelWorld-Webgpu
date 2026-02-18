@@ -151,7 +151,7 @@ function shouldRenderFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x: num
   // X bounds - check neighbor chunk
   if (nx < 0) {
     if (neighbors?.west) return !neighbors.west.isSolidAt(CHUNK_WIDTH - 1, ny, nz);
-    return true; // conservative: render if no neighbor
+    return true;
   }
   if (nx >= CHUNK_WIDTH) {
     if (neighbors?.east) return !neighbors.east.isSolidAt(0, ny, nz);
@@ -168,6 +168,5 @@ function shouldRenderFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x: num
     return true;
   }
 
-  // Within this chunk
   return !chunk.isSolidAt(nx, ny, nz);
 }

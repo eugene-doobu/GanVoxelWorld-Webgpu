@@ -11,7 +11,7 @@ export class HUD {
     this.lastFpsTime = performance.now();
   }
 
-  update(cameraPos: vec3, chunkCount: number, seed: number, speed: number): void {
+  update(cameraPos: vec3, chunkCount: number, seed: number, speed: number, timeStr?: string): void {
     this.frames++;
     const now = performance.now();
     if (now - this.lastFpsTime >= 1000) {
@@ -25,6 +25,7 @@ export class HUD {
       `Pos: ${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}<br>` +
       `Chunks: ${chunkCount}<br>` +
       `Seed: ${seed}<br>` +
-      `Speed: ${speed.toFixed(1)}`;
+      `Speed: ${speed.toFixed(1)}` +
+      (timeStr ? `<br>Time: ${timeStr}` : '');
   }
 }

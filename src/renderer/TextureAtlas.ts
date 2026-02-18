@@ -1,17 +1,25 @@
 import { TILE_SIZE, ATLAS_TILES, ATLAS_PIXEL_SIZE } from '../constants';
-import { getBlockColor, ALL_BLOCK_TYPES } from '../terrain/BlockTypes';
+import { getBlockColor, getBlockMaterial, ALL_BLOCK_TYPES } from '../terrain/BlockTypes';
 import { WebGPUContext } from './WebGPUContext';
 
 export class TextureAtlas {
   private gpuTexture: GPUTexture;
+  private gpuMaterialTexture: GPUTexture;
 
   constructor(ctx: WebGPUContext) {
     const pixels = this.generateAtlasPixels();
     this.gpuTexture = this.uploadTexture(ctx, pixels);
+
+    const materialPixels = this.generateMaterialPixels();
+    this.gpuMaterialTexture = this.uploadTexture(ctx, materialPixels);
   }
 
   get texture(): GPUTexture {
     return this.gpuTexture;
+  }
+
+  get materialTexture(): GPUTexture {
+    return this.gpuMaterialTexture;
   }
 
   private generateAtlasPixels(): Uint8Array {
@@ -36,6 +44,39 @@ export class TextureAtlas {
           pixels[pixelIndex + 1] = g;
           pixels[pixelIndex + 2] = b;
           pixels[pixelIndex + 3] = a;
+        }
+      }
+    }
+
+    return pixels;
+  }
+
+  private generateMaterialPixels(): Uint8Array {
+    const size = ATLAS_PIXEL_SIZE * ATLAS_PIXEL_SIZE * 4;
+    const pixels = new Uint8Array(size);
+
+    for (const blockType of ALL_BLOCK_TYPES) {
+      const index = blockType as number;
+      if (index >= ATLAS_TILES * ATLAS_TILES) continue;
+
+      const tileX = index % ATLAS_TILES;
+      const tileY = Math.floor(index / ATLAS_TILES);
+      const mat = getBlockMaterial(blockType);
+
+      const startX = tileX * TILE_SIZE;
+      const startY = tileY * TILE_SIZE;
+
+      const rVal = Math.round(mat.roughness * 255);
+      const gVal = Math.round(mat.metallic * 255);
+      const bVal = Math.round(mat.emissive * 255);
+
+      for (let y = 0; y < TILE_SIZE; y++) {
+        for (let x = 0; x < TILE_SIZE; x++) {
+          const pixelIndex = ((startY + y) * ATLAS_PIXEL_SIZE + (startX + x)) * 4;
+          pixels[pixelIndex + 0] = rVal;   // R = roughness
+          pixels[pixelIndex + 1] = gVal;   // G = metallic
+          pixels[pixelIndex + 2] = bVal;   // B = emissive
+          pixels[pixelIndex + 3] = 255;
         }
       }
     }

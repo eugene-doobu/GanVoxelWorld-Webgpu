@@ -1,6 +1,6 @@
 import { vec3 } from 'gl-matrix';
 import { WebGPUContext } from '../renderer/WebGPUContext';
-import { ChunkDrawCall } from '../renderer/RenderPipeline';
+import { ChunkDrawCall } from '../renderer/DeferredPipeline';
 import { Chunk } from './Chunk';
 import { TerrainGenerator } from './TerrainGenerator';
 import { CaveGenerator } from './CaveGenerator';

@@ -1,3 +1,5 @@
+import { DEPTH_FORMAT } from '../constants';
+
 export class WebGPUContext {
   adapter!: GPUAdapter;
   device!: GPUDevice;
@@ -5,6 +7,8 @@ export class WebGPUContext {
   format!: GPUTextureFormat;
   canvas!: HTMLCanvasElement;
   depthTexture!: GPUTexture;
+
+  onResize: (() => void) | null = null;
 
   private constructor() {}
 
@@ -50,12 +54,12 @@ export class WebGPUContext {
     if (this.depthTexture) this.depthTexture.destroy();
     this.depthTexture = this.device.createTexture({
       size: [this.canvas.width, this.canvas.height],
-      format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      format: DEPTH_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
   }
 
-  resize(): void {
+  resize(): boolean {
     const dpr = window.devicePixelRatio || 1;
     const w = Math.floor(this.canvas.clientWidth * dpr);
     const h = Math.floor(this.canvas.clientHeight * dpr);
@@ -63,7 +67,10 @@ export class WebGPUContext {
       this.canvas.width = w;
       this.canvas.height = h;
       this.createDepthTexture();
+      if (this.onResize) this.onResize();
+      return true;
     }
+    return false;
   }
 
   get aspectRatio(): number {

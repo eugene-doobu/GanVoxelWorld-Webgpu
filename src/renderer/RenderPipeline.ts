@@ -86,10 +86,6 @@ export class RenderPipeline {
         entryPoint: 'main',
         targets: [{
           format: this.ctx.format,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
-          },
         }],
       },
       primitive: {
