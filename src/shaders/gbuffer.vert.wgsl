@@ -47,11 +47,11 @@ fn main(input: VertexInput) -> VertexOutput {
   // Vegetation wind animation (TALL_GRASS=80, POPPY=81, DANDELION=82)
   if (blockType >= 80u && blockType <= 82u) {
     let windTime = camera.time.x;
-    // Height interpolation: bottom is anchored, top sways
-    let heightFactor = fract(worldPos.y); // ~0.01 at bottom, ~0.99 at top
+    // Use original Y for height factor (stable, pre-wind)
+    let heightFactor = fract(input.position.y); // ~0.01 at bottom, ~0.99 at top
     let windStrength = 0.12 * heightFactor;
-    let freq1 = worldPos.x * 1.8 + worldPos.z * 0.9 + windTime * 3.0;
-    let freq2 = worldPos.x * 0.6 + worldPos.z * 1.6 + windTime * 2.2;
+    let freq1 = input.position.x * 1.8 + input.position.z * 0.9 + windTime * 3.0;
+    let freq2 = input.position.x * 0.6 + input.position.z * 1.6 + windTime * 2.2;
     worldPos.x += sin(freq1) * windStrength;
     worldPos.z += cos(freq2) * windStrength * 0.8;
   }

@@ -751,23 +751,26 @@ export class TextureAtlas {
 
       for (let y = 0; y < TILE_SIZE; y++) {
         for (let x = 0; x < TILE_SIZE; x++) {
-          const [r, g, b] = this.getBlockPattern(blockType, x, y, br, bg, bb);
           const pixelIndex = ((startY + y) * ATLAS_PIXEL_SIZE + (startX + x)) * 4;
-          pixels[pixelIndex + 0] = r;
-          pixels[pixelIndex + 1] = g;
-          pixels[pixelIndex + 2] = b;
-          // Vegetation blocks get per-pixel alpha from their pattern function
+          // Vegetation: single call returns RGBA (pattern + alpha)
           if (isBlockCrossMesh(blockType)) {
-            let alpha = 255;
+            let rgba: [number, number, number, number];
             if (blockType === BlockType.TALL_GRASS) {
-              alpha = patternTallGrass(x, y)[3];
+              rgba = patternTallGrass(x, y);
             } else if (blockType === BlockType.POPPY) {
-              alpha = patternPoppy(x, y)[3];
-            } else if (blockType === BlockType.DANDELION) {
-              alpha = patternDandelion(x, y)[3];
+              rgba = patternPoppy(x, y);
+            } else {
+              rgba = patternDandelion(x, y);
             }
-            pixels[pixelIndex + 3] = alpha;
+            pixels[pixelIndex + 0] = rgba[0];
+            pixels[pixelIndex + 1] = rgba[1];
+            pixels[pixelIndex + 2] = rgba[2];
+            pixels[pixelIndex + 3] = rgba[3];
           } else {
+            const [r, g, b] = this.getBlockPattern(blockType, x, y, br, bg, bb);
+            pixels[pixelIndex + 0] = r;
+            pixels[pixelIndex + 1] = g;
+            pixels[pixelIndex + 2] = b;
             pixels[pixelIndex + 3] = ba;
           }
         }
