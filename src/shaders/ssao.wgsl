@@ -76,7 +76,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampleDepth = textureLoad(depthTex, clamp(samplePixel, vec2<i32>(0), vec2<i32>(fullDims) - vec2<i32>(1)), 0);
     let sampleViewPos = viewPosFromDepth(sampleUV, sampleDepth);
 
-    let rangeCheck = smoothstep(0.0, 1.0, params.radius / abs(fragPos.z - sampleViewPos.z));
+    let rangeCheck = smoothstep(0.0, 1.0, params.radius / (abs(fragPos.z - sampleViewPos.z) + 0.0001));
     occlusion += select(0.0, 1.0, sampleViewPos.z >= samplePos.z + params.bias) * rangeCheck;
   }
 

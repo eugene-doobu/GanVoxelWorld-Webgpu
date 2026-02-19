@@ -1,5 +1,6 @@
 import { mat4, vec3 } from 'gl-matrix';
-import { SHADOW_CASCADE_COUNT, SHADOW_MAP_SIZE, SHADOW_CASCADE_SPLITS, DEPTH_FORMAT } from '../constants';
+import { DEPTH_FORMAT } from '../constants';
+import { Config } from '../config/Config';
 import { WebGPUContext } from './WebGPUContext';
 
 import shadowVertShader from '../shaders/shadow.vert.wgsl?raw';
@@ -8,6 +9,30 @@ export interface ChunkDrawCall {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;
+}
+
+// WebGPU-compatible orthographic projection: depth range [0, 1] instead of [-1, 1]
+function orthoZO(out: mat4, left: number, right: number, bottom: number, top: number, near: number, far: number): mat4 {
+  const lr = 1 / (left - right);
+  const bt = 1 / (bottom - top);
+  const nf = 1 / (near - far);
+  out[0] = -2 * lr;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = 0;
+  out[4] = 0;
+  out[5] = -2 * bt;
+  out[6] = 0;
+  out[7] = 0;
+  out[8] = 0;
+  out[9] = 0;
+  out[10] = nf;
+  out[11] = 0;
+  out[12] = (left + right) * lr;
+  out[13] = (top + bottom) * bt;
+  out[14] = near * nf;
+  out[15] = 1;
+  return out;
 }
 
 export class ShadowMap {
@@ -27,10 +52,14 @@ export class ShadowMap {
 
   lightViewProjs: mat4[] = [];
 
+  // Pre-allocated uniform data (avoid per-frame allocations)
+  private uniformData = new Float32Array(52); // 3*16 + 4 = 52 floats
+
   constructor(ctx: WebGPUContext) {
     this.ctx = ctx;
+    const cascadeCount = Config.data.rendering.shadows.cascadeCount;
 
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+    for (let i = 0; i < cascadeCount; i++) {
       this.lightViewProjs.push(mat4.create());
     }
 
@@ -41,8 +70,9 @@ export class ShadowMap {
   }
 
   private createTextures(): void {
+    const shadows = Config.data.rendering.shadows;
     this.shadowTexture = this.ctx.device.createTexture({
-      size: [SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, SHADOW_CASCADE_COUNT],
+      size: [shadows.mapSize, shadows.mapSize, shadows.cascadeCount],
       format: DEPTH_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
@@ -52,7 +82,7 @@ export class ShadowMap {
     });
 
     this.cascadeViews = [];
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+    for (let i = 0; i < shadows.cascadeCount; i++) {
       this.cascadeViews.push(this.shadowTexture.createView({
         dimension: '2d',
         baseArrayLayer: i,
@@ -83,7 +113,7 @@ export class ShadowMap {
         module: vertModule,
         entryPoint: 'main',
         buffers: [{
-          arrayStride: 24,
+          arrayStride: 28,
           attributes: [
             { shaderLocation: 0, offset: 0, format: 'float32x3' },
             { shaderLocation: 1, offset: 12, format: 'uint32' },
@@ -108,6 +138,7 @@ export class ShadowMap {
 
   private createBuffers(): void {
     const device = this.ctx.device;
+    const cascadeCount = Config.data.rendering.shadows.cascadeCount;
 
     // 3 mat4 (192 bytes) + vec4 splits (16 bytes) = 208 bytes
     this.uniformBuffer = device.createBuffer({
@@ -115,7 +146,7 @@ export class ShadowMap {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+    for (let i = 0; i < cascadeCount; i++) {
       const buf = device.createBuffer({
         size: 16, // u32 padded to 16 bytes
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -127,8 +158,9 @@ export class ShadowMap {
   }
 
   private createBindGroups(): void {
+    const cascadeCount = Config.data.rendering.shadows.cascadeCount;
     this.bindGroups = [];
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+    for (let i = 0; i < cascadeCount; i++) {
       this.bindGroups.push(this.ctx.device.createBindGroup({
         layout: this.bindGroupLayout,
         entries: [
@@ -140,28 +172,27 @@ export class ShadowMap {
   }
 
   updateLightMatrices(cameraPos: vec3, cameraViewProj: mat4, sunDir: vec3): void {
-    const invViewProj = mat4.create();
-    mat4.invert(invViewProj, cameraViewProj);
-
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
-      const splitDist = SHADOW_CASCADE_SPLITS[i];
+    const shadows = Config.data.rendering.shadows;
+    for (let i = 0; i < shadows.cascadeCount; i++) {
+      const splitDist = shadows.cascadeSplits[i];
       this.computeCascadeMatrix(cameraPos, sunDir, splitDist, i);
     }
 
-    // Upload uniform buffer
-    const data = new Float32Array(52); // 3*16 + 4 = 52 floats
-    for (let i = 0; i < SHADOW_CASCADE_COUNT; i++) {
+    // Upload uniform buffer (reuse pre-allocated array)
+    const data = this.uniformData;
+    for (let i = 0; i < shadows.cascadeCount; i++) {
       data.set(this.lightViewProjs[i] as Float32Array, i * 16);
     }
-    data[48] = SHADOW_CASCADE_SPLITS[0];
-    data[49] = SHADOW_CASCADE_SPLITS[1];
-    data[50] = SHADOW_CASCADE_SPLITS[2];
+    data[48] = shadows.cascadeSplits[0];
+    data[49] = shadows.cascadeSplits[1];
+    data[50] = shadows.cascadeSplits[2];
     data[51] = 0;
 
     this.ctx.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
   private computeCascadeMatrix(cameraPos: vec3, sunDir: vec3, splitDist: number, index: number): void {
+    const mapSize = Config.data.rendering.shadows.mapSize;
     // Compute orthographic projection centered on camera position, aligned to light direction
     const lightDir = vec3.normalize(vec3.create(), sunDir);
     const lightUp = Math.abs(lightDir[1]) > 0.99
@@ -179,14 +210,38 @@ export class ShadowMap {
 
     // Orthographic bounds based on split distance
     const halfSize = splitDist * 1.2;
-    const lightProj = mat4.create();
-    mat4.ortho(lightProj, -halfSize, halfSize, -halfSize, halfSize, 0.1, splitDist * 5);
 
-    mat4.multiply(this.lightViewProjs[index], lightProj, lightView);
+    // WebGPU-compatible ortho projection with [0,1] depth range
+    const lightProj = mat4.create();
+    orthoZO(lightProj, -halfSize, halfSize, -halfSize, halfSize, 0.1, splitDist * 5);
+
+    // Texel snapping: prevent shadow swimming when camera moves sub-texel amounts
+    // Compute preliminary lightViewProj
+    const lvp = this.lightViewProjs[index];
+    mat4.multiply(lvp, lightProj, lightView);
+
+    // Transform world origin to shadow clip space
+    const ox = lvp[0] * 0 + lvp[4] * 0 + lvp[8] * 0 + lvp[12];
+    const oy = lvp[1] * 0 + lvp[5] * 0 + lvp[9] * 0 + lvp[13];
+    // Scale to texel coordinates
+    const halfMapSize = mapSize / 2;
+    const txX = ox * halfMapSize;
+    const txY = oy * halfMapSize;
+    // Compute rounding offset
+    const offsetX = (Math.round(txX) - txX) / halfMapSize;
+    const offsetY = (Math.round(txY) - txY) / halfMapSize;
+
+    // Apply offset to projection matrix translation
+    lightProj[12] += offsetX;
+    lightProj[13] += offsetY;
+
+    // Recompute final matrix with snapped projection
+    mat4.multiply(lvp, lightProj, lightView);
   }
 
   renderShadowPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[]): void {
-    for (let c = 0; c < SHADOW_CASCADE_COUNT; c++) {
+    const cascadeCount = Config.data.rendering.shadows.cascadeCount;
+    for (let c = 0; c < cascadeCount; c++) {
       const pass = encoder.beginRenderPass({
         colorAttachments: [],
         depthStencilAttachment: {

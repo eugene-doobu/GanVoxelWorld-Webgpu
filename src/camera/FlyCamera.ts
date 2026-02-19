@@ -1,5 +1,5 @@
 import { mat4, vec3 } from 'gl-matrix';
-import { CAMERA_SPEED, CAMERA_FAST_SPEED, MOUSE_SENSITIVITY, CAMERA_FOV, CAMERA_NEAR, CAMERA_FAR } from '../constants';
+import { Config } from '../config/Config';
 
 export class FlyCamera {
   position: vec3;
@@ -7,7 +7,7 @@ export class FlyCamera {
   pitch = -0.3;
 
   private keys = new Set<string>();
-  private speed = CAMERA_SPEED;
+  private speed = Config.data.camera.speed;
   private rightMouseDown = false;
   private canvas: HTMLCanvasElement;
 
@@ -45,8 +45,8 @@ export class FlyCamera {
 
     document.addEventListener('mousemove', (e) => {
       if (!this.rightMouseDown) return;
-      this.yaw += e.movementX * MOUSE_SENSITIVITY;
-      this.pitch -= e.movementY * MOUSE_SENSITIVITY;
+      this.yaw += e.movementX * Config.data.camera.mouseSensitivity;
+      this.pitch -= e.movementY * Config.data.camera.mouseSensitivity;
       this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
     });
 
@@ -72,7 +72,7 @@ export class FlyCamera {
 
     const move = vec3.create();
     const isShift = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-    const spd = (isShift ? CAMERA_FAST_SPEED : this.speed) * dt;
+    const spd = (isShift ? Config.data.camera.fastSpeed : this.speed) * dt;
 
     if (this.keys.has('KeyW')) vec3.scaleAndAdd(move, move, forward, spd);
     if (this.keys.has('KeyS')) vec3.scaleAndAdd(move, move, forward, -spd);
@@ -91,8 +91,8 @@ export class FlyCamera {
       this.position[2] + Math.cos(this.pitch) * Math.sin(this.yaw),
     );
 
-    mat4.lookAt(this.view, this.position as Float32Array as any, target as Float32Array as any, [0, 1, 0]);
-    perspectiveZO(this.projection, CAMERA_FOV, aspect, CAMERA_NEAR, CAMERA_FAR);
+    mat4.lookAt(this.view, this.position, target, [0, 1, 0]);
+    perspectiveZO(this.projection, Config.data.camera.fov, aspect, Config.data.camera.near, Config.data.camera.far);
     mat4.multiply(this.viewProj, this.projection, this.view);
     return this.viewProj;
   }

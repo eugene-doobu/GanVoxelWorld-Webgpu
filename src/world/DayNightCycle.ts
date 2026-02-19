@@ -1,5 +1,5 @@
 import { vec3 } from 'gl-matrix';
-import { DAY_DURATION_SECONDS } from '../constants';
+import { Config } from '../config/Config';
 
 export class DayNightCycle {
   // Time of day: 0.0 = midnight, 0.25 = 06:00, 0.5 = noon, 0.75 = 18:00
@@ -14,7 +14,7 @@ export class DayNightCycle {
 
   update(dt: number): void {
     if (!this.paused) {
-      this.timeOfDay += dt / DAY_DURATION_SECONDS;
+      this.timeOfDay += dt / Config.data.environment.dayDurationSeconds;
       this.timeOfDay -= Math.floor(this.timeOfDay);
     }
     this.updateSunPosition();

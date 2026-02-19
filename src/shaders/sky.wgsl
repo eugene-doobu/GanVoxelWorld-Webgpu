@@ -50,6 +50,110 @@ fn hash(p: vec2<f32>) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+// === Volumetric cloud functions ===
+const CLOUD_MIN_Y: f32 = 200.0;
+const CLOUD_MAX_Y: f32 = 350.0;
+const CLOUD_STEPS: u32 = 16u;
+
+fn hash3d(p: vec3<f32>) -> f32 {
+  var p3 = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+fn cloudNoise(p: vec3<f32>) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+
+  return mix(
+    mix(mix(hash3d(i), hash3d(i + vec3<f32>(1.0, 0.0, 0.0)), u.x),
+        mix(hash3d(i + vec3<f32>(0.0, 1.0, 0.0)), hash3d(i + vec3<f32>(1.0, 1.0, 0.0)), u.x), u.y),
+    mix(mix(hash3d(i + vec3<f32>(0.0, 0.0, 1.0)), hash3d(i + vec3<f32>(1.0, 0.0, 1.0)), u.x),
+        mix(hash3d(i + vec3<f32>(0.0, 1.0, 1.0)), hash3d(i + vec3<f32>(1.0, 1.0, 1.0)), u.x), u.y),
+    u.z
+  );
+}
+
+fn fbmCloud(p: vec3<f32>) -> f32 {
+  var val = 0.0;
+  var amp = 0.5;
+  var pos = p;
+  for (var i = 0; i < 4; i++) {
+    val += amp * cloudNoise(pos);
+    pos *= 2.0;
+    amp *= 0.5;
+  }
+  return val;
+}
+
+fn sampleCloudDensity(worldPos: vec3<f32>, time: f32) -> f32 {
+  let windOffset = vec3<f32>(time * 5.0, 0.0, time * 2.0);
+  let p = (worldPos + windOffset) * 0.005;
+
+  let noise = fbmCloud(p);
+  let density = smoothstep(0.4, 0.7, noise);
+
+  let heightFraction = (worldPos.y - CLOUD_MIN_Y) / (CLOUD_MAX_Y - CLOUD_MIN_Y);
+  let heightFade = smoothstep(0.0, 0.2, heightFraction) * smoothstep(1.0, 0.8, heightFraction);
+
+  return density * heightFade;
+}
+
+fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, sunColor: vec3<f32>, time: f32) -> vec4<f32> {
+  if (rayDir.y <= 0.001) {
+    return vec4<f32>(0.0);
+  }
+
+  let tMin = (CLOUD_MIN_Y - rayOrigin.y) / rayDir.y;
+  let tMax = (CLOUD_MAX_Y - rayOrigin.y) / rayDir.y;
+
+  if (tMin > tMax || tMax < 0.0) {
+    return vec4<f32>(0.0);
+  }
+
+  let tStart = max(tMin, 0.0);
+  let tEnd = min(tMax, 5000.0);
+  let stepSize = (tEnd - tStart) / f32(CLOUD_STEPS);
+
+  var transmittance = 1.0;
+  var lightEnergy = 0.0;
+
+  for (var i = 0u; i < CLOUD_STEPS; i++) {
+    let t = tStart + (f32(i) + 0.5) * stepSize;
+    let pos = rayOrigin + rayDir * t;
+
+    let density = sampleCloudDensity(pos, time);
+    if (density < 0.01) {
+      continue;
+    }
+
+    let extinction = density * 0.8;
+    let sampleTransmittance = exp(-extinction * stepSize);
+
+    // Sun-direction light marching (3 steps)
+    var lightDensity = 0.0;
+    let lightStep = 30.0;
+    for (var j = 1u; j <= 3u; j++) {
+      let lightPos = pos + sunDir * lightStep * f32(j);
+      lightDensity += sampleCloudDensity(lightPos, time);
+    }
+    let lightTransmittance = exp(-lightDensity * 0.5);
+
+    lightEnergy += density * transmittance * lightTransmittance * stepSize;
+    transmittance *= sampleTransmittance;
+
+    if (transmittance < 0.01) {
+      break;
+    }
+  }
+
+  let cloudColor = sunColor * lightEnergy * 0.15 + vec3<f32>(0.7, 0.75, 0.8) * lightEnergy * 0.05;
+  let alpha = 1.0 - transmittance;
+
+  return vec4<f32>(cloudColor, alpha);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Only render where depth == 1.0 (sky pixels)
@@ -135,6 +239,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let glowColor = mix(vec3<f32>(1.2, 0.6, 0.2), vec3<f32>(1.5, 1.3, 0.9), clamp(sunHeight * 3.0, 0.0, 1.0));
     skyColor += glowColor * glowStr;
   }
+
+  // === Volumetric clouds ===
+  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, sunDir, scene.sunColor.xyz, timeOfDay);
+  skyColor = mix(skyColor, cloud.rgb, cloud.a);
 
   // === Night sky ===
   let nightFactor = clamp(-sunHeight * 4.0 - 0.2, 0.0, 1.0);

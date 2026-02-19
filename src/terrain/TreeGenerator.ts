@@ -3,10 +3,8 @@ import { Chunk } from './Chunk';
 import { BlockType } from './BlockTypes';
 import { BiomeType } from './BiomeTypes';
 import { TerrainGenerator } from './TerrainGenerator';
-import {
-  CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH,
-  TREES_PER_CHUNK, MIN_TRUNK_HEIGHT, MAX_TRUNK_HEIGHT, LEAF_DECAY_CHANCE,
-} from '../constants';
+import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH } from '../constants';
+import { Config } from '../config/Config';
 
 export class TreeGenerator {
   private seed: number;
@@ -18,11 +16,12 @@ export class TreeGenerator {
   }
 
   generate(chunk: Chunk): void {
+    const trees = Config.data.terrain.trees;
     const chunkSeed = (this.seed ^ (chunk.chunkX * 341873128) ^ (chunk.chunkZ * 132897987)) | 0;
     const rng = new SeededRandom(chunkSeed);
 
     const maxTrees = this.getMaxTreesForChunk(chunk, rng);
-    const maxAttempts = TREES_PER_CHUNK * 4;
+    const maxAttempts = trees.perChunk * 4;
     let treesPlaced = 0;
 
     for (let i = 0; i < maxAttempts && treesPlaced < maxTrees; i++) {
@@ -38,27 +37,28 @@ export class TreeGenerator {
       if (!this.canPlaceTreeAtBiome(worldX, worldZ, surfaceY, rng)) continue;
       if (!this.canPlaceTree(chunk, x, surfaceY, z)) continue;
 
-      const trunkHeight = rng.nextInt(MIN_TRUNK_HEIGHT, MAX_TRUNK_HEIGHT + 1);
+      const trunkHeight = rng.nextInt(trees.minTrunkHeight, trees.maxTrunkHeight + 1);
       this.placeOakTree(chunk, x, surfaceY + 1, z, trunkHeight, rng);
       treesPlaced++;
     }
   }
 
   private getMaxTreesForChunk(chunk: Chunk, rng: SeededRandom): number {
-    if (!this.terrainGen) return TREES_PER_CHUNK;
+    const perChunk = Config.data.terrain.trees.perChunk;
+    if (!this.terrainGen) return perChunk;
 
     const centerX = chunk.worldOffsetX + (CHUNK_WIDTH >> 1);
     const centerZ = chunk.worldOffsetZ + (CHUNK_DEPTH >> 1);
     const biome = this.terrainGen.getBiome(centerX, centerZ, 64);
 
     switch (biome) {
-      case BiomeType.FOREST: return TREES_PER_CHUNK * 3;
-      case BiomeType.PLAINS: return TREES_PER_CHUNK;
-      case BiomeType.TUNDRA: return Math.max(1, TREES_PER_CHUNK >> 1);
-      case BiomeType.MOUNTAINS: return Math.max(1, TREES_PER_CHUNK >> 1);
+      case BiomeType.FOREST: return perChunk * 3;
+      case BiomeType.PLAINS: return perChunk;
+      case BiomeType.TUNDRA: return Math.max(1, perChunk >> 1);
+      case BiomeType.MOUNTAINS: return Math.max(1, perChunk >> 1);
       case BiomeType.DESERT: return 0;
       case BiomeType.OCEAN: return 0;
-      default: return TREES_PER_CHUNK;
+      default: return perChunk;
     }
   }
 
@@ -95,6 +95,7 @@ export class TreeGenerator {
   }
 
   private placeOakTree(chunk: Chunk, x: number, baseY: number, z: number, trunkHeight: number, rng: SeededRandom): void {
+    const leafDecay = Config.data.terrain.trees.leafDecayChance;
     chunk.setBlock(x, baseY - 1, z, BlockType.DIRT);
 
     for (let y = 0; y < trunkHeight; y++) {
@@ -102,17 +103,17 @@ export class TreeGenerator {
     }
 
     const leafBaseY = baseY + trunkHeight - 2;
-    this.placeLeafLayer(chunk, x, leafBaseY, z, 2, rng);
-    this.placeLeafLayer(chunk, x, leafBaseY + 1, z, 2, rng);
-    this.placeLeafLayer(chunk, x, leafBaseY + 2, z, 1, rng);
-    this.placeLeafLayerTop(chunk, x, leafBaseY + 3, z, rng);
+    this.placeLeafLayer(chunk, x, leafBaseY, z, 2, rng, leafDecay);
+    this.placeLeafLayer(chunk, x, leafBaseY + 1, z, 2, rng, leafDecay);
+    this.placeLeafLayer(chunk, x, leafBaseY + 2, z, 1, rng, leafDecay);
+    this.placeLeafLayerTop(chunk, x, leafBaseY + 3, z, rng, leafDecay);
   }
 
-  private placeLeafLayer(chunk: Chunk, cx: number, y: number, cz: number, radius: number, rng: SeededRandom): void {
+  private placeLeafLayer(chunk: Chunk, cx: number, y: number, cz: number, radius: number, rng: SeededRandom, leafDecay: number): void {
     for (let dx = -radius; dx <= radius; dx++) {
       for (let dz = -radius; dz <= radius; dz++) {
         if (Math.abs(dx) === radius && Math.abs(dz) === radius) {
-          if (rng.next() < LEAF_DECAY_CHANCE) continue;
+          if (rng.next() < leafDecay) continue;
         }
         const bx = cx + dx, bz = cz + dz;
         if (!chunk.isInBounds(bx, y, bz)) continue;
@@ -123,12 +124,12 @@ export class TreeGenerator {
     }
   }
 
-  private placeLeafLayerTop(chunk: Chunk, cx: number, y: number, cz: number, rng: SeededRandom): void {
+  private placeLeafLayerTop(chunk: Chunk, cx: number, y: number, cz: number, rng: SeededRandom, leafDecay: number): void {
     this.tryPlaceLeaf(chunk, cx, y, cz);
-    if (rng.next() > LEAF_DECAY_CHANCE) this.tryPlaceLeaf(chunk, cx + 1, y, cz);
-    if (rng.next() > LEAF_DECAY_CHANCE) this.tryPlaceLeaf(chunk, cx - 1, y, cz);
-    if (rng.next() > LEAF_DECAY_CHANCE) this.tryPlaceLeaf(chunk, cx, y, cz + 1);
-    if (rng.next() > LEAF_DECAY_CHANCE) this.tryPlaceLeaf(chunk, cx, y, cz - 1);
+    if (rng.next() > leafDecay) this.tryPlaceLeaf(chunk, cx + 1, y, cz);
+    if (rng.next() > leafDecay) this.tryPlaceLeaf(chunk, cx - 1, y, cz);
+    if (rng.next() > leafDecay) this.tryPlaceLeaf(chunk, cx, y, cz + 1);
+    if (rng.next() > leafDecay) this.tryPlaceLeaf(chunk, cx, y, cz - 1);
   }
 
   private tryPlaceLeaf(chunk: Chunk, x: number, y: number, z: number): void {

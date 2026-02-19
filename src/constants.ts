@@ -1,82 +1,23 @@
-// Chunk dimensions
+// Chunk dimensions (structural, immutable)
 export const CHUNK_WIDTH = 16;
 export const CHUNK_HEIGHT = 128;
 export const CHUNK_DEPTH = 16;
 export const CHUNK_TOTAL_BLOCKS = CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH;
 
-// Noise defaults
-export const NOISE_OCTAVES = 4;
-export const NOISE_PERSISTENCE = 0.5;
-export const NOISE_LACUNARITY = 2.0;
-export const NOISE_SCALE = 50.0;
-
-// Terrain
-export const SEA_LEVEL = 0;
-export const MIN_HEIGHT = 1;
-export const MAX_HEIGHT = 100;
-export const DIRT_LAYER_DEPTH = 4;
-
-// Biome
-export const BIOME_SCALE = 200.0;
-
-// Cave
-export const CAVE_COUNT = 8;
-export const CAVE_MIN_LENGTH = 50;
-export const CAVE_MAX_LENGTH = 150;
-export const CAVE_MIN_RADIUS = 1.5;
-export const CAVE_MAX_RADIUS = 4.0;
-export const CAVE_MIN_Y = 10;
-export const CAVE_MAX_Y = 60;
-
-// Trees
-export const TREES_PER_CHUNK = 3;
-export const MIN_TRUNK_HEIGHT = 4;
-export const MAX_TRUNK_HEIGHT = 6;
-export const LEAF_DECAY_CHANCE = 0.2;
-
-// Atlas
+// Atlas (structural)
 export const TILE_SIZE = 16;
 export const ATLAS_TILES = 16;
 export const ATLAS_PIXEL_SIZE = TILE_SIZE * ATLAS_TILES;
 
-// Rendering
-export const DEFAULT_RENDER_DISTANCE = 10;
-export const CHUNKS_PER_FRAME = 2;
-
-// Camera
-export const CAMERA_SPEED = 20.0;
-export const CAMERA_FAST_SPEED = 60.0;
-export const MOUSE_SENSITIVITY = 0.002;
-export const CAMERA_FOV = 70 * (Math.PI / 180);
-export const CAMERA_NEAR = 0.1;
-export const CAMERA_FAR = 1000.0;
-
-// Fog
-export const FOG_START_RATIO = 0.75;
-export const FOG_END_RATIO = 1.0;
-
-// G-Buffer formats
-export const GBUFFER_ALBEDO_FORMAT: GPUTextureFormat = 'rgba8unorm';     // RGB=albedo, A=emissive
-export const GBUFFER_NORMAL_FORMAT: GPUTextureFormat = 'rgba16float';    // RGB=world normal
-export const GBUFFER_MATERIAL_FORMAT: GPUTextureFormat = 'rgba8unorm';   // R=roughness, G=metallic, B=AO
+// G-Buffer formats (GPU, immutable)
+export const GBUFFER_ALBEDO_FORMAT: GPUTextureFormat = 'rgba8unorm';
+export const GBUFFER_NORMAL_FORMAT: GPUTextureFormat = 'rgba16float';
+export const GBUFFER_MATERIAL_FORMAT: GPUTextureFormat = 'rgba8unorm';
 export const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 export const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 
-// Shadow mapping
-export const SHADOW_CASCADE_COUNT = 3;
-export const SHADOW_MAP_SIZE = 2048;
-export const SHADOW_CASCADE_SPLITS = [20, 60, 160]; // block distances
-
-// SSAO
-export const SSAO_KERNEL_SIZE = 16;
+// SSAO noise (structural)
 export const SSAO_NOISE_SIZE = 4;
-export const SSAO_RADIUS = 1.5;
-export const SSAO_BIAS = 0.025;
 
-// Bloom
-export const BLOOM_MIP_LEVELS = 5;
-export const BLOOM_THRESHOLD = 1.0;
-export const BLOOM_INTENSITY = 0.3;
-
-// Day-Night Cycle
-export const DAY_DURATION_SECONDS = 1200; // 20 minutes real time = 1 game day
+// Point Lights (structural)
+export const MAX_POINT_LIGHTS = 128;

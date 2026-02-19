@@ -5,15 +5,24 @@ import { TextureAtlas } from './renderer/TextureAtlas';
 import { FlyCamera } from './camera/FlyCamera';
 import { ChunkManager } from './terrain/ChunkManager';
 import { DayNightCycle } from './world/DayNightCycle';
+import { WeatherSystem } from './world/WeatherSystem';
 import { HUD } from './ui/HUD';
-import { CHUNK_WIDTH, CHUNK_HEIGHT, FOG_START_RATIO, FOG_END_RATIO } from './constants';
+import { Config } from './config/Config';
+import { CHUNK_WIDTH, CHUNK_HEIGHT } from './constants';
+
+import { InspectorPanel } from './ui/inspector/InspectorPanel';
+import { buildTerrainTab } from './ui/inspector/TerrainTab';
+import { buildRenderingTab } from './ui/inspector/RenderingTab';
+import { buildCameraTab } from './ui/inspector/CameraTab';
+import { buildEnvironmentTab } from './ui/inspector/EnvironmentTab';
 
 async function main() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 
   // WebGPU check
   if (!navigator.gpu) {
-    document.getElementById('no-webgpu')!.style.display = 'flex';
+    const noWebgpu = document.getElementById('no-webgpu');
+    if (noWebgpu) noWebgpu.style.display = 'flex';
     return;
   }
 
@@ -21,7 +30,8 @@ async function main() {
   try {
     ctx = await WebGPUContext.create(canvas);
   } catch (e) {
-    document.getElementById('no-webgpu')!.style.display = 'flex';
+    const noWebgpu = document.getElementById('no-webgpu');
+    if (noWebgpu) noWebgpu.style.display = 'flex';
     console.error(e);
     return;
   }
@@ -30,15 +40,13 @@ async function main() {
   ctx.resize();
 
   const dayNightCycle = new DayNightCycle();
+  const weatherSystem = new WeatherSystem();
   const pipeline = new DeferredPipeline(ctx, dayNightCycle);
+  pipeline.setWeatherSystem(weatherSystem);
   const atlas = new TextureAtlas(ctx);
-  pipeline.setAtlasTexture(atlas.texture, atlas.materialTexture);
+  pipeline.setAtlasTexture(atlas.texture, atlas.materialTexture, atlas.normalTexture);
 
   let seed = 0;
-  const seedInput = document.getElementById('seed-input') as HTMLInputElement;
-  const renderDistSlider = document.getElementById('render-distance') as HTMLInputElement;
-  const renderDistVal = document.getElementById('render-dist-val')!;
-  const regenBtn = document.getElementById('regenerate-btn') as HTMLButtonElement;
 
   // Camera starts at center of a chunk area at a comfortable height
   const startX = 0 * CHUNK_WIDTH + CHUNK_WIDTH / 2;
@@ -46,31 +54,35 @@ async function main() {
   const camera = new FlyCamera(canvas, vec3.fromValues(startX, CHUNK_HEIGHT * 0.75, startZ));
 
   let chunkManager = new ChunkManager(ctx, seed);
-  chunkManager.renderDistance = parseInt(renderDistSlider.value);
 
   const hud = new HUD();
 
-  // UI events
-  regenBtn.addEventListener('click', () => {
-    seed = parseInt(seedInput.value) || 0;
+  // ---- Inspector Panel ----
+  const inspector = new InspectorPanel();
+
+  const terrainTab = buildTerrainTab((newSeed) => {
+    seed = newSeed;
     chunkManager.regenerate(seed);
   });
+  inspector.addTab('Terrain', terrainTab);
 
-  renderDistSlider.addEventListener('input', () => {
-    const val = parseInt(renderDistSlider.value);
-    renderDistVal.textContent = String(val);
-    chunkManager.renderDistance = val;
-  });
+  const renderingTab = buildRenderingTab();
+  inspector.addTab('Rendering', renderingTab);
 
-  const timeSlider = document.getElementById('time-slider') as HTMLInputElement;
-  const timeVal = document.getElementById('time-val')!;
-  timeSlider.addEventListener('input', () => {
-    const t = parseInt(timeSlider.value) / 100;
-    dayNightCycle.setTime(t);
-    timeVal.textContent = dayNightCycle.getTimeString();
-  });
-  timeSlider.addEventListener('dblclick', () => {
-    dayNightCycle.paused = false;
+  const cameraTab = buildCameraTab();
+  inspector.addTab('Camera', cameraTab);
+
+  const envTab = buildEnvironmentTab(dayNightCycle, weatherSystem);
+  inspector.addTab('Environment', envTab);
+
+  // Reactive config: apply rendering changes immediately
+  Config.onChange((path) => {
+    if (path === 'rendering.general.renderDistance') {
+      chunkManager.renderDistance = Config.data.rendering.general.renderDistance;
+    }
+    if (path.startsWith('rendering.bloom.')) {
+      pipeline.updateBloomParams();
+    }
   });
 
   // Responsive canvas
@@ -87,27 +99,35 @@ async function main() {
     ctx.resize();
     camera.update(dt);
     dayNightCycle.update(dt);
-    if (!dayNightCycle.paused) {
-      timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
-      timeVal.textContent = dayNightCycle.getTimeString();
-    }
+    weatherSystem.update(dt);
+
+    // Update environment tab time display
+    if ((envTab as any)._updateTime) (envTab as any)._updateTime();
 
     const viewProj = camera.getViewProjection(ctx.aspectRatio);
     const projection = camera.getProjection();
+    const fog = Config.data.rendering.fog;
     const fogDist = chunkManager.renderDistance * CHUNK_WIDTH;
+    const fogMul = weatherSystem.getFogDensityMultiplier();
 
     pipeline.updateCamera(
       viewProj,
       projection,
       camera.position as Float32Array,
-      fogDist * FOG_START_RATIO,
-      fogDist * FOG_END_RATIO,
+      fogDist * fog.startRatio / fogMul,
+      fogDist * fog.endRatio / fogMul,
+      dt,
     );
 
     chunkManager.update(camera.position, viewProj as Float32Array);
 
+    // Update point lights from emissive blocks
+    const pointLights = chunkManager.getPointLights(camera.position);
+    pipeline.updatePointLights(pointLights);
+
     const drawCalls = chunkManager.getDrawCalls();
-    pipeline.render(drawCalls);
+    const waterDrawCalls = chunkManager.getWaterDrawCalls();
+    pipeline.render(drawCalls, waterDrawCalls);
 
     hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed(), dayNightCycle.getTimeString());
 

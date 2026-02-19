@@ -6,8 +6,11 @@ import { TerrainGenerator } from './TerrainGenerator';
 import { CaveGenerator } from './CaveGenerator';
 import { OreGenerator } from './OreGenerator';
 import { TreeGenerator } from './TreeGenerator';
-import { buildChunkMesh, ChunkNeighbors } from '../meshing/MeshBuilder';
-import { CHUNK_WIDTH, CHUNK_DEPTH, CHUNKS_PER_FRAME, DEFAULT_RENDER_DISTANCE } from '../constants';
+import { WaterSimulator } from './WaterSimulator';
+import { buildChunkMesh, ChunkNeighbors, MeshData } from '../meshing/MeshBuilder';
+import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
+import { Config } from '../config/Config';
+import { getBlockData } from './BlockTypes';
 
 const enum ChunkState {
   QUEUED,
@@ -19,6 +22,13 @@ const enum ChunkState {
 interface ChunkEntry {
   chunk: Chunk;
   state: ChunkState;
+}
+
+export interface PointLight {
+  position: [number, number, number];
+  color: [number, number, number];
+  intensity: number;
+  radius: number;
 }
 
 function chunkKey(cx: number, cz: number): string {
@@ -34,12 +44,17 @@ export class ChunkManager {
   private caveGen: CaveGenerator;
   private oreGen: OreGenerator;
   private treeGen: TreeGenerator;
+  private waterSim: WaterSimulator;
 
-  renderDistance = DEFAULT_RENDER_DISTANCE;
+  renderDistance = Config.data.rendering.general.renderDistance;
   totalChunks = 0;
 
-  // Frustum planes for culling
-  private frustumPlanes: Float32Array[] = [];
+  // Emissive block cache per chunk
+  private emissiveCache = new Map<string, PointLight[]>();
+  private lastCameraPos = vec3.create();
+
+  // Frustum planes for culling (pre-allocated)
+  private frustumPlanes: Float32Array[] = Array.from({ length: 6 }, () => new Float32Array(4));
 
   constructor(ctx: WebGPUContext, seed: number) {
     this.ctx = ctx;
@@ -47,6 +62,7 @@ export class ChunkManager {
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.waterSim = new WaterSimulator();
   }
 
   regenerate(seed: number): void {
@@ -56,11 +72,13 @@ export class ChunkManager {
     }
     this.chunks.clear();
     this.loadQueue = [];
+    this.emissiveCache.clear();
 
     this.terrainGen = new TerrainGenerator(seed);
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.waterSim = new WaterSimulator();
   }
 
   update(cameraPos: vec3, viewProj: Float32Array): void {
@@ -92,8 +110,9 @@ export class ChunkManager {
     });
 
     // Process N chunks per frame
+    const chunksPerFrame = Config.data.rendering.general.chunksPerFrame;
     let processed = 0;
-    while (this.loadQueue.length > 0 && processed < CHUNKS_PER_FRAME) {
+    while (this.loadQueue.length > 0 && processed < chunksPerFrame) {
       const { cx, cz } = this.loadQueue.shift()!;
       const key = chunkKey(cx, cz);
       const entry = this.chunks.get(key);
@@ -105,6 +124,7 @@ export class ChunkManager {
       this.caveGen.generate(entry.chunk);
       this.oreGen.generate(entry.chunk);
       this.treeGen.generate(entry.chunk);
+      this.waterSim.generate(entry.chunk);
 
       // Build mesh
       entry.state = ChunkState.MESHING;
@@ -125,6 +145,9 @@ export class ChunkManager {
         this.ctx.device.queue.writeBuffer(entry.chunk.indexBuffer, 0, meshData.indices.buffer as ArrayBuffer);
         entry.chunk.indexCount = meshData.indexCount;
       }
+
+      // Upload water mesh
+      this.uploadWaterMesh(entry.chunk, meshData);
 
       entry.state = ChunkState.READY;
       processed++;
@@ -149,6 +172,7 @@ export class ChunkManager {
     }
     for (const key of toRemove) {
       this.chunks.delete(key);
+      this.emissiveCache.delete(key);
     }
 
     this.totalChunks = this.chunks.size;
@@ -177,6 +201,8 @@ export class ChunkManager {
       this.ctx.device.queue.writeBuffer(entry.chunk.indexBuffer, 0, meshData.indices.buffer as ArrayBuffer);
       entry.chunk.indexCount = meshData.indexCount;
     }
+
+    this.uploadWaterMesh(entry.chunk, meshData);
   }
 
   private getNeighbors(cx: number, cz: number): ChunkNeighbors {
@@ -213,13 +239,116 @@ export class ChunkManager {
     return calls;
   }
 
-  private extractFrustumPlanes(m: Float32Array): void {
-    // Extract 6 frustum planes from view-projection matrix
-    this.frustumPlanes = [];
-    for (let i = 0; i < 6; i++) {
-      this.frustumPlanes.push(new Float32Array(4));
+  private uploadWaterMesh(chunk: Chunk, meshData: MeshData): void {
+    // Destroy old water buffers
+    chunk.waterVertexBuffer?.destroy();
+    chunk.waterIndexBuffer?.destroy();
+    chunk.waterVertexBuffer = null;
+    chunk.waterIndexBuffer = null;
+    chunk.waterIndexCount = 0;
+
+    if (meshData.waterIndexCount > 0) {
+      chunk.waterVertexBuffer = this.ctx.device.createBuffer({
+        size: meshData.waterVertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      this.ctx.device.queue.writeBuffer(chunk.waterVertexBuffer, 0, meshData.waterVertices.buffer as ArrayBuffer);
+
+      chunk.waterIndexBuffer = this.ctx.device.createBuffer({
+        size: meshData.waterIndices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      this.ctx.device.queue.writeBuffer(chunk.waterIndexBuffer, 0, meshData.waterIndices.buffer as ArrayBuffer);
+      chunk.waterIndexCount = meshData.waterIndexCount;
+    }
+  }
+
+  getWaterDrawCalls(): ChunkDrawCall[] {
+    const calls: ChunkDrawCall[] = [];
+    for (const entry of this.chunks.values()) {
+      if (entry.state !== ChunkState.READY) continue;
+      const c = entry.chunk;
+      if (!c.waterVertexBuffer || !c.waterIndexBuffer || c.waterIndexCount === 0) continue;
+      if (!this.isChunkInFrustum(c)) continue;
+      calls.push({
+        vertexBuffer: c.waterVertexBuffer,
+        indexBuffer: c.waterIndexBuffer,
+        indexCount: c.waterIndexCount,
+      });
+    }
+    return calls;
+  }
+
+  private collectEmissiveBlocks(chunk: Chunk): PointLight[] {
+    const lights: PointLight[] = [];
+    const ox = chunk.worldOffsetX;
+    const oz = chunk.worldOffsetZ;
+
+    for (let x = 0; x < CHUNK_WIDTH; x++) {
+      for (let z = 0; z < CHUNK_DEPTH; z++) {
+        for (let y = 0; y < CHUNK_HEIGHT; y++) {
+          const blockType = chunk.getBlock(x, y, z);
+          if (blockType === 0) continue;
+          const data = getBlockData(blockType);
+          if (data.emissive <= 0) continue;
+
+          const c = data.color;
+          // Determine radius based on emissive intensity
+          let radius: number;
+          if (data.emissive >= 0.8) {
+            radius = 8;
+          } else if (data.emissive >= 0.1) {
+            radius = 3;
+          } else {
+            radius = 2;
+          }
+
+          lights.push({
+            position: [ox + x + 0.5, y + 0.5, oz + z + 0.5],
+            color: [c[0] / 255, c[1] / 255, c[2] / 255],
+            intensity: data.emissive * 2.0,
+            radius,
+          });
+        }
+      }
+    }
+    return lights;
+  }
+
+  getPointLights(cameraPos: vec3): PointLight[] {
+    // Collect all emissive lights from loaded chunks
+    const allLights: PointLight[] = [];
+    for (const [key, entry] of this.chunks) {
+      if (entry.state !== ChunkState.READY) continue;
+      let cached = this.emissiveCache.get(key);
+      if (!cached) {
+        cached = this.collectEmissiveBlocks(entry.chunk);
+        this.emissiveCache.set(key, cached);
+      }
+      for (const light of cached) {
+        allLights.push(light);
+      }
     }
 
+    // Sort by distance to camera and take closest MAX_POINT_LIGHTS
+    const cx = cameraPos[0] as number;
+    const cy = cameraPos[1] as number;
+    const cz = cameraPos[2] as number;
+
+    if (allLights.length > MAX_POINT_LIGHTS) {
+      allLights.sort((a, b) => {
+        const da = (a.position[0] - cx) ** 2 + (a.position[1] - cy) ** 2 + (a.position[2] - cz) ** 2;
+        const db = (b.position[0] - cx) ** 2 + (b.position[1] - cy) ** 2 + (b.position[2] - cz) ** 2;
+        return da - db;
+      });
+      allLights.length = MAX_POINT_LIGHTS;
+    }
+
+    return allLights;
+  }
+
+  private extractFrustumPlanes(m: Float32Array): void {
+    // Extract 6 frustum planes from view-projection matrix (reuse pre-allocated arrays)
     // Left
     this.frustumPlanes[0][0] = m[3] + m[0];
     this.frustumPlanes[0][1] = m[7] + m[4];
@@ -265,7 +394,7 @@ export class ChunkManager {
     const minY = 0;
     const minZ = chunk.worldOffsetZ;
     const maxX = minX + CHUNK_WIDTH;
-    const maxY = 128;
+    const maxY = CHUNK_HEIGHT;
     const maxZ = minZ + CHUNK_DEPTH;
 
     for (const p of this.frustumPlanes) {

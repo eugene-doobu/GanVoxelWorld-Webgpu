@@ -30,6 +30,24 @@ struct ShadowUniforms {
 @group(2) @binding(3) var ssaoTexture: texture_2d<f32>;
 @group(2) @binding(4) var linearSampler: sampler;
 
+// Point Lights
+struct PointLight {
+  position: vec3f,
+  radius: f32,
+  color: vec3f,
+  intensity: f32,
+};
+
+struct PointLightBuffer {
+  count: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+  lights: array<PointLight, 128>,
+};
+
+@group(3) @binding(0) var<storage, read> pointLights: PointLightBuffer;
+
 // ====================== Constants ======================
 const PI: f32 = 3.14159265359;
 const FOG_COLOR_DAY = vec3<f32>(0.75, 0.85, 0.95);
@@ -197,7 +215,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Emissive
   let emissiveColor = albedo * emissive * 5.0;
 
-  var finalColor = directLight + ambient + emissiveColor;
+  // Point Lights
+  var pointLightContrib = vec3<f32>(0.0, 0.0, 0.0);
+  let lightCount = min(pointLights.count, 128u);
+  for (var i = 0u; i < lightCount; i++) {
+    let light = pointLights.lights[i];
+    let lightVec = light.position - worldPos;
+    let dist = length(lightVec);
+    if (dist > light.radius) { continue; }
+
+    let L_p = normalize(lightVec);
+    let attenuation = smoothstep(light.radius, 0.0, dist) / (1.0 + dist * dist);
+    let NdotL_p = max(dot(N, L_p), 0.0);
+
+    // Diffuse contribution
+    let pointDiffuse = albedo * light.color * light.intensity * NdotL_p * attenuation;
+
+    // Simple specular (Blinn-Phong for point lights to keep cost low)
+    let H_p = normalize(V + L_p);
+    let NdotH_p = max(dot(N, H_p), 0.0);
+    let specPower = mix(8.0, 64.0, 1.0 - roughness);
+    let pointSpecular = light.color * light.intensity * pow(NdotH_p, specPower) * attenuation * (1.0 - roughness) * 0.3;
+
+    pointLightContrib += pointDiffuse + pointSpecular;
+  }
+
+  var finalColor = directLight + ambient + emissiveColor + pointLightContrib;
 
   // Fog
   let fogStart = scene.fogParams.x;

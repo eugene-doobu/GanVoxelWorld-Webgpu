@@ -2,6 +2,7 @@ struct Camera {
   viewProj: mat4x4<f32>,
   cameraPos: vec4<f32>,
   fogParams: vec4<f32>,
+  time: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -10,6 +11,7 @@ struct VertexInput {
   @location(0) position: vec3<f32>,
   @location(1) normalIndex: u32,
   @location(2) texCoord: vec2<f32>,
+  @location(3) ao: f32,
 };
 
 struct VertexOutput {
@@ -17,14 +19,33 @@ struct VertexOutput {
   @location(0) worldPos: vec3<f32>,
   @location(1) texCoord: vec2<f32>,
   @location(2) @interpolate(flat) normalIndex: u32,
+  @location(3) ao: f32,
 };
 
 @vertex
 fn main(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
-  output.clipPos = camera.viewProj * vec4<f32>(input.position, 1.0);
-  output.worldPos = input.position;
+
+  let faceIdx = input.normalIndex & 0xFFu;
+  let blockType = input.normalIndex >> 8u;
+
+  var worldPos = input.position;
+
+  // Leaves wind animation (BlockType.LEAVES = 51)
+  if (blockType == 51u) {
+    let windTime = camera.time.x;
+    let windStrength = 0.08;
+    let freq1 = worldPos.x * 1.5 + worldPos.z * 0.7 + windTime * 2.5;
+    let freq2 = worldPos.x * 0.8 + worldPos.z * 1.3 + windTime * 1.8;
+    worldPos.x += sin(freq1) * windStrength;
+    worldPos.z += cos(freq2) * windStrength * 0.7;
+    worldPos.y += sin(freq1 + freq2) * windStrength * 0.3;
+  }
+
+  output.clipPos = camera.viewProj * vec4<f32>(worldPos, 1.0);
+  output.worldPos = worldPos;
   output.texCoord = input.texCoord;
   output.normalIndex = input.normalIndex;
+  output.ao = input.ao;
   return output;
 }

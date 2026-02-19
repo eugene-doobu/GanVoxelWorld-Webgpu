@@ -28,25 +28,6 @@
       pointer-events: none; z-index: 10;
       line-height: 1.5;
     }
-    #controls {
-      position: fixed; bottom: 12px; left: 12px;
-      font-family: system-ui, sans-serif;
-      font-size: 13px; color: #ccc;
-      background: rgba(0,0,0,0.5);
-      padding: 8px 12px; border-radius: 4px;
-      z-index: 10; display: flex; gap: 12px; align-items: center;
-    }
-    #controls label { display: flex; align-items: center; gap: 6px; }
-    #controls input[type="number"] {
-      width: 80px; background: #333; border: 1px solid #555;
-      color: #fff; padding: 2px 6px; border-radius: 3px;
-    }
-    #controls input[type="range"] { width: 100px; }
-    #controls button {
-      background: #446; border: 1px solid #668; color: #fff;
-      padding: 4px 12px; border-radius: 3px; cursor: pointer;
-    }
-    #controls button:hover { background: #558; }
     #crosshair {
       position: fixed; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
@@ -64,12 +45,6 @@
   <canvas id="canvas"></canvas>
   <div id="crosshair"></div>
   <div id="hud"></div>
-  <div id="controls">
-    <label>Seed: <input type="number" id="seed-input" value="0" /></label>
-    <label>Render: <input type="range" id="render-distance" min="2" max="20" value="10" /><span id="render-dist-val">10</span></label>
-    <label>Time: <input type="range" id="time-slider" min="0" max="100" value="35" step="1" /><span id="time-val">08:24</span></label>
-    <button id="regenerate-btn">Regenerate</button>
-  </div>
   <div id="no-webgpu">
     <h1>WebGPU Not Supported</h1>
     <p>Your browser does not support WebGPU. Please use Chrome 113+, Edge 113+, or another WebGPU-capable browser.</p>

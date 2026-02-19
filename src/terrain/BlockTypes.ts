@@ -10,6 +10,7 @@ export const enum BlockType {
   CLAY = 13,
   WATER = 20,
   LAVA = 21,
+  FLOWING_WATER = 22,
   SNOW = 30,
   ICE = 31,
   COAL_ORE = 40,
@@ -58,8 +59,9 @@ reg(BlockType.GRAVEL, true,                        136, 126, 126, 255,  0.90,  0
 reg(BlockType.CLAY, true,                          160, 166, 179, 255,  0.80,  0.0,  0.0);
 
 // Fluids
-reg(BlockType.WATER, true,                          32,  64, 200, 255,  0.10,  0.0,  0.0);
+reg(BlockType.WATER, false,                         32,  64, 200, 255,  0.10,  0.0,  0.0);
 reg(BlockType.LAVA, true,                          207,  92,  15, 255,  0.90,  0.0,  1.0);
+reg(BlockType.FLOWING_WATER, false,                 48,  90, 215, 255,  0.10,  0.0,  0.0);
 
 // Snow/ice
 reg(BlockType.SNOW, true,                          249, 255, 254, 255,  0.85,  0.0,  0.0);
@@ -102,6 +104,18 @@ export function getBlockColor(type: number): [number, number, number, number] {
 export function getBlockMaterial(type: number): { roughness: number; metallic: number; emissive: number } {
   const d = getBlockData(type);
   return { roughness: d.roughness, metallic: d.metallic, emissive: d.emissive };
+}
+
+export function isBlockWater(type: number): boolean {
+  return type === BlockType.WATER || type === BlockType.FLOWING_WATER;
+}
+
+export function isBlockCutout(type: number): boolean {
+  return type === BlockType.LEAVES;
+}
+
+export function isBlockTranslucent(type: number): boolean {
+  return type === BlockType.ICE;
 }
 
 // All registered block types (for atlas generation)

@@ -1,13 +1,13 @@
 import { vec3 } from 'gl-matrix';
 
 export class HUD {
-  private el: HTMLElement;
+  private el: HTMLElement | null;
   private frames = 0;
   private lastFpsTime = 0;
   private fps = 0;
 
   constructor() {
-    this.el = document.getElementById('hud')!;
+    this.el = document.getElementById('hud');
     this.lastFpsTime = performance.now();
   }
 
@@ -20,6 +20,7 @@ export class HUD {
       this.lastFpsTime = now;
     }
 
+    if (!this.el) return;
     this.el.innerHTML =
       `FPS: ${this.fps}<br>` +
       `Pos: ${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}<br>` +

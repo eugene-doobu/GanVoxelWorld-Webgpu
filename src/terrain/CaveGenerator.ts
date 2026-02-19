@@ -2,11 +2,8 @@ import { SimplexNoise } from '../noise/SimplexNoise';
 import { SeededRandom } from '../noise/SeededRandom';
 import { Chunk } from './Chunk';
 import { BlockType } from './BlockTypes';
-import {
-  CHUNK_WIDTH, CHUNK_DEPTH,
-  CAVE_COUNT, CAVE_MIN_LENGTH, CAVE_MAX_LENGTH,
-  CAVE_MIN_RADIUS, CAVE_MAX_RADIUS, CAVE_MIN_Y, CAVE_MAX_Y,
-} from '../constants';
+import { CHUNK_WIDTH, CHUNK_DEPTH } from '../constants';
+import { Config } from '../config/Config';
 
 export class CaveGenerator {
   private dirNoiseX: SimplexNoise;
@@ -22,25 +19,27 @@ export class CaveGenerator {
   }
 
   generate(chunk: Chunk): void {
+    const caves = Config.data.terrain.caves;
     const chunkSeed = (this.seed ^ (chunk.chunkX * 73856093) ^ (chunk.chunkZ * 19349663)) | 0;
     const rng = new SeededRandom(chunkSeed);
 
-    for (let i = 0; i < CAVE_COUNT; i++) {
+    for (let i = 0; i < caves.count; i++) {
       this.generateWorm(chunk, rng);
     }
   }
 
   private generateWorm(chunk: Chunk, rng: SeededRandom): void {
+    const caves = Config.data.terrain.caves;
     let x = rng.nextInt(0, CHUNK_WIDTH);
-    let y = rng.nextInt(CAVE_MIN_Y, CAVE_MAX_Y);
+    let y = rng.nextInt(caves.minY, caves.maxY);
     let z = rng.nextInt(0, CHUNK_DEPTH);
-    const length = rng.nextInt(CAVE_MIN_LENGTH, CAVE_MAX_LENGTH);
+    const length = rng.nextInt(caves.minLength, caves.maxLength);
     const noiseOffset = rng.next() * 1000;
 
     for (let step = 0; step < length; step++) {
       const t = step * 0.1 + noiseOffset;
 
-      const radius = CAVE_MIN_RADIUS + (CAVE_MAX_RADIUS - CAVE_MIN_RADIUS) * this.radiusNoise.noise2D(t, 0);
+      const radius = caves.minRadius + (caves.maxRadius - caves.minRadius) * this.radiusNoise.noise2D(t, 0);
       this.carveSphere(chunk, x, y, z, radius);
 
       const angleXZ = this.dirNoiseX.noise2D(t, 0) * Math.PI * 2;
@@ -50,7 +49,7 @@ export class CaveGenerator {
       y += Math.sin(angleY) * 0.3;
       z += Math.sin(angleXZ) * Math.cos(angleY);
 
-      y = Math.max(CAVE_MIN_Y, Math.min(CAVE_MAX_Y, y));
+      y = Math.max(caves.minY, Math.min(caves.maxY, y));
     }
   }
 
@@ -70,7 +69,7 @@ export class CaveGenerator {
           const dx = x - cx, dy = y - cy, dz = z - cz;
           if (dx * dx + dy * dy + dz * dz <= r2) {
             const cur = chunk.getBlock(x, y, z);
-            if (cur !== BlockType.BEDROCK && cur !== BlockType.WATER) {
+            if (cur !== BlockType.BEDROCK && cur !== BlockType.WATER && cur !== BlockType.FLOWING_WATER) {
               chunk.setBlock(x, y, z, BlockType.AIR);
             }
           }

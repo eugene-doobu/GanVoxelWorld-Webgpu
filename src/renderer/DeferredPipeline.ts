@@ -5,23 +5,42 @@ import { ShadowMap, ChunkDrawCall } from './ShadowMap';
 import { SSAO } from './SSAO';
 import { PostProcess } from './PostProcess';
 import { DayNightCycle } from '../world/DayNightCycle';
+import { WeatherSystem, WeatherType } from '../world/WeatherSystem';
 import {
   GBUFFER_ALBEDO_FORMAT,
   GBUFFER_NORMAL_FORMAT,
   GBUFFER_MATERIAL_FORMAT,
   DEPTH_FORMAT,
   HDR_FORMAT,
+  MAX_POINT_LIGHTS,
 } from '../constants';
+import type { PointLight } from '../terrain/ChunkManager';
 
 import gbufferVertShader from '../shaders/gbuffer.vert.wgsl?raw';
 import gbufferFragShader from '../shaders/gbuffer.frag.wgsl?raw';
 import lightingShader from '../shaders/lighting.wgsl?raw';
 import skyShader from '../shaders/sky.wgsl?raw';
+import waterVertShader from '../shaders/water.vert.wgsl?raw';
+import waterFragShader from '../shaders/water.frag.wgsl?raw';
+import weatherShader from '../shaders/weather.wgsl?raw';
 
 // SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) = 144 bytes
 const SCENE_UNIFORM_SIZE = 144;
-// Camera uniform for G-Buffer pass: viewProj(64) + cameraPos(16) + fogParams(16) = 96 bytes
-const CAMERA_UNIFORM_SIZE = 96;
+// Camera uniform for G-Buffer pass: viewProj(64) + cameraPos(16) + fogParams(16) + time(4) + pad(12) = 112 bytes
+const CAMERA_UNIFORM_SIZE = 112;
+
+// Water vertex uniform: viewProjection(64) + time(4) + pad(12) = 80 bytes
+const WATER_VERT_UNIFORM_SIZE = 80;
+// Water fragment uniform: cameraPos(12+pad4) + sunDir(12+pad4) + sunColor(12) + time(4) + fogStart(4) + fogEnd(4) + fogColor(12) + pad(4) = 80 bytes
+const WATER_FRAG_UNIFORM_SIZE = 80;
+
+// Weather uniform: viewProjection(64) + cameraPos(16) + params(16) = 96 bytes
+const WEATHER_UNIFORM_SIZE = 96;
+// Weather particle count: 64x64 grid
+const WEATHER_PARTICLE_COUNT = 64 * 64;
+
+// PointLight storage: count(4) + pad(12) + 128 * (position(12)+radius(4)+color(12)+intensity(4)) = 16 + 128*32 = 4112 bytes
+const POINT_LIGHT_BUFFER_SIZE = 16 + MAX_POINT_LIGHTS * 32;
 
 export type { ChunkDrawCall } from './ShadowMap';
 
@@ -48,6 +67,10 @@ export class DeferredPipeline {
   private sceneBindGroupLayout!: GPUBindGroupLayout;
   private gbufferReadBindGroupLayout!: GPUBindGroupLayout;
   private shadowReadBindGroupLayout!: GPUBindGroupLayout;
+  private pointLightBindGroupLayout!: GPUBindGroupLayout;
+  private pointLightBuffer!: GPUBuffer;
+  private pointLightBindGroup!: GPUBindGroup;
+  private pointLightF32 = new Float32Array(POINT_LIGHT_BUFFER_SIZE / 4);
   private sceneBindGroup!: GPUBindGroup;
   private gbufferReadBindGroup!: GPUBindGroup | null;
   private shadowReadBindGroup!: GPUBindGroup | null;
@@ -57,6 +80,13 @@ export class DeferredPipeline {
   private skyBindGroupLayout!: GPUBindGroupLayout;
   private skyBindGroup!: GPUBindGroup | null;
 
+  // Water forward pass
+  private waterPipeline!: GPURenderPipeline;
+  private waterBindGroupLayout!: GPUBindGroupLayout;
+  private waterVertUniformBuffer!: GPUBuffer;
+  private waterFragUniformBuffer!: GPUBuffer;
+  private waterBindGroup!: GPUBindGroup;
+
   // Samplers
   private linearSampler!: GPUSampler;
   private shadowSampler!: GPUSampler;
@@ -65,6 +95,30 @@ export class DeferredPipeline {
   private lastViewProj = mat4.create();
   private lastProjection = mat4.create();
   private lastInvProjection = mat4.create();
+
+  // Pre-allocated uniform buffers (avoid per-frame allocations)
+  private camF32 = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
+  private sceneF32 = new Float32Array(SCENE_UNIFORM_SIZE / 4);
+  private waterVertF32 = new Float32Array(WATER_VERT_UNIFORM_SIZE / 4);
+  private waterFragF32 = new Float32Array(WATER_FRAG_UNIFORM_SIZE / 4);
+  private invVP = mat4.create();
+
+  // Weather pass
+  private weatherPipeline!: GPURenderPipeline;
+  private weatherUniformBuffer!: GPUBuffer;
+  private weatherBindGroupLayout!: GPUBindGroupLayout;
+  private weatherBindGroup!: GPUBindGroup;
+  private weatherF32 = new Float32Array(WEATHER_UNIFORM_SIZE / 4);
+  private weatherSystem: WeatherSystem | null = null;
+
+  // Cached atlas sampler
+  private atlasSampler: GPUSampler | null = null;
+
+  // Dirty flag for bind groups
+  private bindGroupsDirty = true;
+
+  // Time accumulator for water animation
+  private waterTime = 0;
 
   constructor(ctx: WebGPUContext, private dayNightCycle: DayNightCycle) {
     this.ctx = ctx;
@@ -78,6 +132,8 @@ export class DeferredPipeline {
     this.createGBufferPass();
     this.createLightingPass();
     this.createSkyPass();
+    this.createWaterPass();
+    this.createWeatherPass();
 
     // Handle resize
     ctx.onResize = () => this.handleResize();
@@ -114,6 +170,7 @@ export class DeferredPipeline {
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
       ],
     });
 
@@ -130,11 +187,12 @@ export class DeferredPipeline {
         module: vertModule,
         entryPoint: 'main',
         buffers: [{
-          arrayStride: 24,
+          arrayStride: 28,
           attributes: [
             { shaderLocation: 0, offset: 0, format: 'float32x3' },
             { shaderLocation: 1, offset: 12, format: 'uint32' },
             { shaderLocation: 2, offset: 16, format: 'float32x2' },
+            { shaderLocation: 3, offset: 24, format: 'float32' },
           ],
         }],
       },
@@ -206,11 +264,25 @@ export class DeferredPipeline {
       ],
     });
 
+    // Group 3: Point Lights (storage buffer)
+    this.pointLightBindGroupLayout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'read-only-storage' },
+      }],
+    });
+
     const lightingModule = device.createShaderModule({ code: lightingShader });
 
     this.lightingPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({
-        bindGroupLayouts: [this.sceneBindGroupLayout, this.gbufferReadBindGroupLayout, this.shadowReadBindGroupLayout],
+        bindGroupLayouts: [
+          this.sceneBindGroupLayout,
+          this.gbufferReadBindGroupLayout,
+          this.shadowReadBindGroupLayout,
+          this.pointLightBindGroupLayout,
+        ],
       }),
       vertex: { module: lightingModule, entryPoint: 'vs_main' },
       fragment: {
@@ -226,9 +298,19 @@ export class DeferredPipeline {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    this.pointLightBuffer = device.createBuffer({
+      size: POINT_LIGHT_BUFFER_SIZE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     this.sceneBindGroup = device.createBindGroup({
       layout: this.sceneBindGroupLayout,
       entries: [{ binding: 0, resource: { buffer: this.sceneUniformBuffer } }],
+    });
+
+    this.pointLightBindGroup = device.createBindGroup({
+      layout: this.pointLightBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: this.pointLightBuffer } }],
     });
   }
 
@@ -256,23 +338,201 @@ export class DeferredPipeline {
     });
   }
 
-  setAtlasTexture(albedoTexture: GPUTexture, materialTexture: GPUTexture): void {
-    const sampler = this.ctx.device.createSampler({
-      magFilter: 'nearest',
-      minFilter: 'nearest',
-      mipmapFilter: 'nearest',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
+  private createWaterPass(): void {
+    const device = this.ctx.device;
+
+    // Single bind group: binding 0 = vertex uniforms, binding 1 = fragment uniforms
+    this.waterBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'uniform' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
+        },
+      ],
     });
+
+    const waterVertModule = device.createShaderModule({ code: waterVertShader });
+    const waterFragModule = device.createShaderModule({ code: waterFragShader });
+
+    this.waterPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.waterBindGroupLayout] }),
+      vertex: {
+        module: waterVertModule,
+        entryPoint: 'main',
+        buffers: [{
+          arrayStride: 20, // pos3 + uv2 = 5 floats = 20 bytes
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x2' },
+          ],
+        }],
+      },
+      fragment: {
+        module: waterFragModule,
+        entryPoint: 'main',
+        targets: [{
+          format: HDR_FORMAT,
+          blend: {
+            color: {
+              srcFactor: 'src-alpha',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+            alpha: {
+              srcFactor: 'one',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+          },
+        }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none', // Render both sides of water
+      },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: false, // Don't write depth (transparent)
+        depthCompare: 'less-equal',
+      },
+    });
+
+    // Create uniform buffers
+    this.waterVertUniformBuffer = device.createBuffer({
+      size: WATER_VERT_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this.waterFragUniformBuffer = device.createBuffer({
+      size: WATER_FRAG_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this.waterBindGroup = device.createBindGroup({
+      layout: this.waterBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
+        { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
+      ],
+    });
+  }
+
+  private createWeatherPass(): void {
+    const device = this.ctx.device;
+
+    this.weatherBindGroupLayout = device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: 'uniform' },
+      }],
+    });
+
+    const weatherModule = device.createShaderModule({ code: weatherShader });
+
+    this.weatherPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.weatherBindGroupLayout] }),
+      vertex: {
+        module: weatherModule,
+        entryPoint: 'vs_main',
+      },
+      fragment: {
+        module: weatherModule,
+        entryPoint: 'fs_main',
+        targets: [{
+          format: HDR_FORMAT,
+          blend: {
+            color: {
+              srcFactor: 'src-alpha',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+            alpha: {
+              srcFactor: 'one',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+          },
+        }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none',
+      },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: false,
+        depthCompare: 'less-equal',
+      },
+    });
+
+    this.weatherUniformBuffer = device.createBuffer({
+      size: WEATHER_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    this.weatherBindGroup = device.createBindGroup({
+      layout: this.weatherBindGroupLayout,
+      entries: [{
+        binding: 0,
+        resource: { buffer: this.weatherUniformBuffer },
+      }],
+    });
+  }
+
+  setWeatherSystem(weather: WeatherSystem): void {
+    this.weatherSystem = weather;
+  }
+
+  updateBloomParams(): void {
+    this.postProcess.updateBloomParams();
+  }
+
+  setAtlasTexture(albedoTexture: GPUTexture, materialTexture: GPUTexture, normalTexture?: GPUTexture): void {
+    if (!this.atlasSampler) {
+      this.atlasSampler = this.ctx.device.createSampler({
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+        mipmapFilter: 'nearest',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+    }
+
+    // Create a 1x1 flat normal texture as fallback if no normal atlas provided
+    const normTex = normalTexture ?? this.createFlatNormalTexture();
 
     this.textureBindGroup = this.ctx.device.createBindGroup({
       layout: this.textureBindGroupLayout,
       entries: [
-        { binding: 0, resource: sampler },
+        { binding: 0, resource: this.atlasSampler },
         { binding: 1, resource: albedoTexture.createView() },
         { binding: 2, resource: materialTexture.createView() },
+        { binding: 3, resource: normTex.createView() },
       ],
     });
+  }
+
+  private createFlatNormalTexture(): GPUTexture {
+    const tex = this.ctx.device.createTexture({
+      size: [1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const data = new Uint8Array([128, 128, 255, 255]); // flat normal (0,0,1)
+    this.ctx.device.queue.writeTexture(
+      { texture: tex },
+      data.buffer as ArrayBuffer,
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
+    return tex;
   }
 
   updateCamera(
@@ -281,14 +541,14 @@ export class DeferredPipeline {
     cameraPos: Float32Array,
     fogStart: number,
     fogEnd: number,
+    dt: number,
   ): void {
     mat4.copy(this.lastViewProj, viewProj);
     mat4.copy(this.lastProjection, projection);
     mat4.invert(this.lastInvProjection, projection);
 
     // Camera uniform for G-Buffer pass
-    const camData = new ArrayBuffer(CAMERA_UNIFORM_SIZE);
-    const camF32 = new Float32Array(camData);
+    const camF32 = this.camF32;
     camF32.set(viewProj as Float32Array, 0);
     camF32[16] = cameraPos[0];
     camF32[17] = cameraPos[1];
@@ -296,16 +556,20 @@ export class DeferredPipeline {
     camF32[19] = 0;
     camF32[20] = fogStart;
     camF32[21] = fogEnd;
-    this.ctx.device.queue.writeBuffer(this.cameraUniformBuffer, 0, camData);
+    camF32[22] = 0;
+    camF32[23] = 0;
+    camF32[24] = this.waterTime; // time (shared with water animation accumulator)
+    camF32[25] = 0;
+    camF32[26] = 0;
+    camF32[27] = 0;
+    this.ctx.device.queue.writeBuffer(this.cameraUniformBuffer, 0, camF32);
 
     // Scene uniform for lighting + sky
-    const invVP = mat4.create();
-    mat4.invert(invVP, viewProj);
+    mat4.invert(this.invVP, viewProj);
 
     const dnc = this.dayNightCycle;
-    const sceneData = new ArrayBuffer(SCENE_UNIFORM_SIZE);
-    const sceneF32 = new Float32Array(sceneData);
-    sceneF32.set(invVP as Float32Array, 0);           // invViewProj
+    const sceneF32 = this.sceneF32;
+    sceneF32.set(this.invVP as Float32Array, 0);       // invViewProj
     sceneF32[16] = cameraPos[0];                       // cameraPos
     sceneF32[17] = cameraPos[1];
     sceneF32[18] = cameraPos[2];
@@ -326,7 +590,7 @@ export class DeferredPipeline {
     sceneF32[33] = fogEnd;
     sceneF32[34] = dnc.timeOfDay;
     sceneF32[35] = 0;
-    this.ctx.device.queue.writeBuffer(this.sceneUniformBuffer, 0, sceneData);
+    this.ctx.device.queue.writeBuffer(this.sceneUniformBuffer, 0, sceneF32);
 
     // Update shadow matrices
     this.shadowMap.updateLightMatrices(
@@ -340,9 +604,113 @@ export class DeferredPipeline {
       this.lastProjection as Float32Array,
       this.lastInvProjection as Float32Array,
     );
+
+    // Update volumetric uniforms
+    this.postProcess.updateVolumetric(
+      this.invVP as Float32Array,
+      cameraPos,
+      new Float32Array([dnc.sunDir[0], dnc.sunDir[1], dnc.sunDir[2]]),
+      new Float32Array([dnc.sunColor[0], dnc.sunColor[1], dnc.sunColor[2]]),
+      dnc.sunIntensity,
+    );
+
+    // Update SSR uniforms
+    this.postProcess.updateSSR(
+      viewProj as Float32Array,
+      this.invVP as Float32Array,
+      cameraPos,
+    );
+
+    // Update water uniforms
+    this.waterTime += dt;
+
+    // Water vertex uniform: viewProjection(mat4x4) + time(f32) + pad(3xf32)
+    const wvF32 = this.waterVertF32;
+    wvF32.set(viewProj as Float32Array, 0);
+    wvF32[16] = this.waterTime;
+    wvF32[17] = 0;
+    wvF32[18] = 0;
+    wvF32[19] = 0;
+    this.ctx.device.queue.writeBuffer(this.waterVertUniformBuffer, 0, wvF32);
+
+    // Water fragment uniform layout (must match WGSL struct exactly):
+    // [0-3]   cameraPos(vec3f) + _pad0(f32) = 16 bytes
+    // [4-7]   sunDirection(vec3f) + _pad1(f32) = 16 bytes
+    // [8-11]  sunColor(vec3f) + time(f32) = 16 bytes
+    // [12-15] fogStart(f32) + fogEnd(f32) + _pad2(f32) + _pad3(f32) = 16 bytes
+    // [16-19] fogColor(vec3f) + _pad4(f32) = 16 bytes
+    // Total: 80 bytes = 20 floats
+    const wfF32 = this.waterFragF32;
+    wfF32[0] = cameraPos[0];
+    wfF32[1] = cameraPos[1];
+    wfF32[2] = cameraPos[2];
+    wfF32[3] = 0; // _pad0
+    wfF32[4] = dnc.sunDir[0];
+    wfF32[5] = dnc.sunDir[1];
+    wfF32[6] = dnc.sunDir[2];
+    wfF32[7] = 0; // _pad1
+    wfF32[8] = dnc.sunColor[0];
+    wfF32[9] = dnc.sunColor[1];
+    wfF32[10] = dnc.sunColor[2];
+    wfF32[11] = this.waterTime;
+    wfF32[12] = fogStart;
+    wfF32[13] = fogEnd;
+    wfF32[14] = 0; // _pad2
+    wfF32[15] = 0; // _pad3
+    // Compute fog color from time of day (matches lighting.wgsl FOG_COLOR constants)
+    const sunHeight = dnc.sunDir[1];
+    const dayFactor = Math.max(0, Math.min(1, (sunHeight + 0.1) / 0.4));
+    // FOG_COLOR_DAY = (0.7, 0.8, 0.95), FOG_COLOR_NIGHT = (0.01, 0.01, 0.02)
+    wfF32[16] = 0.01 + 0.69 * dayFactor;
+    wfF32[17] = 0.01 + 0.79 * dayFactor;
+    wfF32[18] = 0.02 + 0.93 * dayFactor;
+    wfF32[19] = 0; // _pad4
+    this.ctx.device.queue.writeBuffer(this.waterFragUniformBuffer, 0, wfF32);
+
+    // Update weather uniforms
+    if (this.weatherSystem && this.weatherSystem.intensity > 0.001) {
+      const wF32 = this.weatherF32;
+      wF32.set(viewProj as Float32Array, 0);     // viewProjection mat4
+      wF32[16] = cameraPos[0];                    // cameraPos
+      wF32[17] = cameraPos[1];
+      wF32[18] = cameraPos[2];
+      wF32[19] = 0;
+      wF32[20] = this.waterTime;                  // time
+      wF32[21] = this.weatherSystem.currentWeather as number; // weatherType
+      wF32[22] = this.weatherSystem.intensity;     // intensity
+      wF32[23] = 0;
+      this.ctx.device.queue.writeBuffer(this.weatherUniformBuffer, 0, wF32);
+    }
   }
 
-  render(drawCalls: ChunkDrawCall[]): void {
+  updatePointLights(lights: PointLight[]): void {
+    const f32 = this.pointLightF32;
+    // Header: count + 3 padding u32s (we write as float, reinterpreted as u32 in shader)
+    const u32View = new Uint32Array(f32.buffer);
+    u32View[0] = lights.length;
+    u32View[1] = 0;
+    u32View[2] = 0;
+    u32View[3] = 0;
+
+    // Each light: position(vec3f) + radius(f32) + color(vec3f) + intensity(f32) = 8 floats = 32 bytes
+    const offset = 4; // header is 4 floats (16 bytes)
+    for (let i = 0; i < lights.length; i++) {
+      const base = offset + i * 8;
+      const light = lights[i];
+      f32[base + 0] = light.position[0];
+      f32[base + 1] = light.position[1];
+      f32[base + 2] = light.position[2];
+      f32[base + 3] = light.radius;
+      f32[base + 4] = light.color[0];
+      f32[base + 5] = light.color[1];
+      f32[base + 6] = light.color[2];
+      f32[base + 7] = light.intensity;
+    }
+
+    this.ctx.device.queue.writeBuffer(this.pointLightBuffer, 0, f32.buffer, 0, 16 + lights.length * 32);
+  }
+
+  render(drawCalls: ChunkDrawCall[], waterDrawCalls?: ChunkDrawCall[]): void {
     const ctx = this.ctx;
     const encoder = ctx.device.createCommandEncoder();
 
@@ -358,14 +726,31 @@ export class DeferredPipeline {
     // Rebuild read bind groups (needed after resize or first frame)
     this.ensureReadBindGroups();
 
-    // 4. Lighting Pass → HDR texture
+    // 4. Lighting Pass -> HDR texture
     this.renderLightingPass(encoder);
 
-    // 5. Sky Pass → HDR texture (only sky pixels)
+    // 5. SSR Composite -> HDR texture (alpha blended reflections)
+    this.postProcess.renderSSR(encoder);
+
+    // 6. Sky Pass -> HDR texture (only sky pixels)
     this.renderSkyPass(encoder);
 
-    // 6+7. Bloom + Tone Mapping → swapchain
+    // 7. Water Forward Pass -> HDR texture (alpha blended)
+    if (waterDrawCalls && waterDrawCalls.length > 0) {
+      this.renderWaterPass(encoder, waterDrawCalls);
+    }
+
+    // 8. Volumetric Light Shafts -> HDR texture (additive)
+    this.postProcess.renderVolumetric(encoder);
+
+    // 8.5. Weather Particles -> HDR texture (alpha blended)
+    if (this.weatherSystem && this.weatherSystem.intensity > 0.001) {
+      this.renderWeatherPass(encoder);
+    }
+
+    // 9+10. Bloom + Tone Mapping -> swapchain
     const swapChainView = ctx.context.getCurrentTexture().createView();
+    this.postProcess.updateTimeOfDay(this.dayNightCycle.timeOfDay);
     this.postProcess.renderBloomAndTonemap(encoder, swapChainView);
 
     ctx.device.queue.submit([encoder.finish()]);
@@ -418,6 +803,9 @@ export class DeferredPipeline {
   }
 
   private ensureReadBindGroups(): void {
+    if (!this.bindGroupsDirty) return;
+    this.bindGroupsDirty = false;
+
     // Recreate bind groups that reference resizable textures
     this.gbufferReadBindGroup = this.ctx.device.createBindGroup({
       layout: this.gbufferReadBindGroupLayout,
@@ -447,6 +835,21 @@ export class DeferredPipeline {
         { binding: 1, resource: this.gBuffer.depthView },
       ],
     });
+
+    // Update volumetric resources (depth + shadow)
+    this.postProcess.setVolumetricResources(
+      this.gBuffer.depthView,
+      this.shadowMap.uniformBuffer,
+      this.shadowMap.shadowTextureView,
+      this.shadowSampler,
+    );
+
+    // Update SSR resources (G-Buffer textures)
+    this.postProcess.setSSRResources(
+      this.gBuffer.normalView,
+      this.gBuffer.materialView,
+      this.gBuffer.depthView,
+    );
   }
 
   private renderLightingPass(encoder: GPUCommandEncoder): void {
@@ -463,6 +866,7 @@ export class DeferredPipeline {
     pass.setBindGroup(0, this.sceneBindGroup);
     pass.setBindGroup(1, this.gbufferReadBindGroup!);
     pass.setBindGroup(2, this.shadowReadBindGroup!);
+    pass.setBindGroup(3, this.pointLightBindGroup);
     pass.draw(3);
     pass.end();
   }
@@ -482,11 +886,57 @@ export class DeferredPipeline {
     pass.end();
   }
 
+  private renderWaterPass(encoder: GPUCommandEncoder, waterDrawCalls: ChunkDrawCall[]): void {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.postProcess.hdrTextureView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+      depthStencilAttachment: {
+        view: this.gBuffer.depthView,
+        depthReadOnly: true,
+      },
+    });
+
+    pass.setPipeline(this.waterPipeline);
+    pass.setBindGroup(0, this.waterBindGroup);
+
+    for (const dc of waterDrawCalls) {
+      if (dc.indexCount === 0) continue;
+      pass.setVertexBuffer(0, dc.vertexBuffer);
+      pass.setIndexBuffer(dc.indexBuffer, 'uint32');
+      pass.drawIndexed(dc.indexCount);
+    }
+
+    pass.end();
+  }
+
+  private renderWeatherPass(encoder: GPUCommandEncoder): void {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.postProcess.hdrTextureView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+      depthStencilAttachment: {
+        view: this.gBuffer.depthView,
+        depthReadOnly: true,
+      },
+    });
+
+    pass.setPipeline(this.weatherPipeline);
+    pass.setBindGroup(0, this.weatherBindGroup);
+    pass.draw(6, WEATHER_PARTICLE_COUNT);
+    pass.end();
+  }
+
   private handleResize(): void {
     this.gBuffer.resize();
     this.ssao.resize();
     this.postProcess.resize();
     // Invalidate bind groups
+    this.bindGroupsDirty = true;
     this.gbufferReadBindGroup = null;
     this.shadowReadBindGroup = null;
     this.skyBindGroup = null;

@@ -2,6 +2,7 @@ import { SeededRandom } from '../noise/SeededRandom';
 import { Chunk } from './Chunk';
 import { BlockType } from './BlockTypes';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH } from '../constants';
+import { Config } from '../config/Config';
 
 interface OreSettings {
   oreType: number;
@@ -11,13 +12,6 @@ interface OreSettings {
   veinSize: number;
 }
 
-const DEFAULT_ORES: OreSettings[] = [
-  { oreType: BlockType.COAL_ORE, minY: 5, maxY: 128, attemptsPerChunk: 20, veinSize: 8 },
-  { oreType: BlockType.IRON_ORE, minY: 5, maxY: 64, attemptsPerChunk: 20, veinSize: 6 },
-  { oreType: BlockType.GOLD_ORE, minY: 5, maxY: 32, attemptsPerChunk: 2, veinSize: 5 },
-  { oreType: BlockType.DIAMOND_ORE, minY: 5, maxY: 16, attemptsPerChunk: 1, veinSize: 4 },
-];
-
 export class OreGenerator {
   private seed: number;
 
@@ -25,11 +19,21 @@ export class OreGenerator {
     this.seed = seed;
   }
 
+  private getOreSettings(): OreSettings[] {
+    const ores = Config.data.terrain.ores;
+    return [
+      { oreType: BlockType.COAL_ORE, minY: ores.coal.minY, maxY: ores.coal.maxY, attemptsPerChunk: ores.coal.attempts, veinSize: ores.coal.veinSize },
+      { oreType: BlockType.IRON_ORE, minY: ores.iron.minY, maxY: ores.iron.maxY, attemptsPerChunk: ores.iron.attempts, veinSize: ores.iron.veinSize },
+      { oreType: BlockType.GOLD_ORE, minY: ores.gold.minY, maxY: ores.gold.maxY, attemptsPerChunk: ores.gold.attempts, veinSize: ores.gold.veinSize },
+      { oreType: BlockType.DIAMOND_ORE, minY: ores.diamond.minY, maxY: ores.diamond.maxY, attemptsPerChunk: ores.diamond.attempts, veinSize: ores.diamond.veinSize },
+    ];
+  }
+
   generate(chunk: Chunk): void {
     const chunkSeed = (this.seed ^ (chunk.chunkX * 498536548) ^ (chunk.chunkZ * 725765765)) | 0;
     const rng = new SeededRandom(chunkSeed);
 
-    for (const ore of DEFAULT_ORES) {
+    for (const ore of this.getOreSettings()) {
       this.generateOre(chunk, ore, rng);
     }
   }
@@ -41,11 +45,11 @@ export class OreGenerator {
       const z = rng.nextInt(0, CHUNK_DEPTH);
 
       if (chunk.getBlock(x, y, z) !== BlockType.STONE) continue;
-      this.generateVein(chunk, x, y, z, settings.oreType, settings.veinSize, rng);
+      this.generateVein(chunk, x, y, z, settings.oreType, settings.veinSize, rng, settings.minY, settings.maxY);
     }
   }
 
-  private generateVein(chunk: Chunk, sx: number, sy: number, sz: number, oreType: number, size: number, rng: SeededRandom): void {
+  private generateVein(chunk: Chunk, sx: number, sy: number, sz: number, oreType: number, size: number, rng: SeededRandom, minY: number, maxY: number): void {
     let x = sx, y = sy, z = sz;
     chunk.setBlock(x, y, z, oreType);
 
@@ -55,6 +59,7 @@ export class OreGenerator {
       z += rng.nextInt(-1, 2);
 
       if (!chunk.isInBounds(x, y, z)) continue;
+      if (y < minY || y >= maxY) continue;
       if (chunk.getBlock(x, y, z) === BlockType.STONE) {
         chunk.setBlock(x, y, z, oreType);
       }

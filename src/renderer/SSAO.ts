@@ -1,4 +1,5 @@
-import { SSAO_KERNEL_SIZE, SSAO_NOISE_SIZE, SSAO_RADIUS, SSAO_BIAS } from '../constants';
+import { SSAO_NOISE_SIZE } from '../constants';
+import { Config } from '../config/Config';
 import { WebGPUContext } from './WebGPUContext';
 
 import ssaoShader from '../shaders/ssao.wgsl?raw';
@@ -87,6 +88,7 @@ export class SSAO {
   }
 
   private createUniformBuffer(): void {
+    const kernelSize = Config.data.rendering.ssao.kernelSize;
     // SSAOParams: projection(64) + invProjection(64) + kernelSamples(16*16=256) + noiseScale(8) + radius(4) + bias(4) = 400 bytes
     const bufferSize = 400;
     this.uniformBuffer = this.ctx.device.createBuffer({
@@ -95,8 +97,8 @@ export class SSAO {
     });
 
     // Generate hemisphere kernel samples
-    const kernelData = new Float32Array(SSAO_KERNEL_SIZE * 4);
-    for (let i = 0; i < SSAO_KERNEL_SIZE; i++) {
+    const kernelData = new Float32Array(kernelSize * 4);
+    for (let i = 0; i < kernelSize; i++) {
       let x = Math.random() * 2 - 1;
       let y = Math.random() * 2 - 1;
       let z = Math.random(); // hemisphere: z >= 0
@@ -104,7 +106,7 @@ export class SSAO {
       x /= len; y /= len; z /= len;
 
       // Accelerating interpolation: samples closer to origin are more frequent
-      let scale = i / SSAO_KERNEL_SIZE;
+      let scale = i / kernelSize;
       scale = 0.1 + scale * scale * 0.9;
       x *= scale; y *= scale; z *= scale;
 
@@ -119,6 +121,7 @@ export class SSAO {
   }
 
   updateProjection(projection: Float32Array, invProjection: Float32Array): void {
+    const ssao = Config.data.rendering.ssao;
     // Write projection (64 bytes) at offset 0
     const projBuf = new ArrayBuffer(64);
     new Float32Array(projBuf).set(projection);
@@ -132,8 +135,8 @@ export class SSAO {
     const extraData = new Float32Array([
       this.halfWidth / SSAO_NOISE_SIZE,
       this.halfHeight / SSAO_NOISE_SIZE,
-      SSAO_RADIUS,
-      SSAO_BIAS,
+      ssao.radius,
+      ssao.bias,
     ]);
     this.ctx.device.queue.writeBuffer(this.uniformBuffer, 384, extraData);
   }

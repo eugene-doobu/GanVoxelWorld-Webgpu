@@ -11,6 +11,11 @@ export class Chunk {
   indexBuffer: GPUBuffer | null = null;
   indexCount = 0;
 
+  // Water GPU resources
+  waterVertexBuffer: GPUBuffer | null = null;
+  waterIndexBuffer: GPUBuffer | null = null;
+  waterIndexCount = 0;
+
   constructor(chunkX: number, chunkZ: number) {
     this.chunkX = chunkX;
     this.chunkZ = chunkZ;
@@ -56,5 +61,11 @@ export class Chunk {
     this.vertexBuffer = null;
     this.indexBuffer = null;
     this.indexCount = 0;
+
+    this.waterVertexBuffer?.destroy();
+    this.waterIndexBuffer?.destroy();
+    this.waterVertexBuffer = null;
+    this.waterIndexBuffer = null;
+    this.waterIndexCount = 0;
   }
 }
