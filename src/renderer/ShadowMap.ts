@@ -124,7 +124,7 @@ export class ShadowMap {
       primitive: {
         topology: 'triangle-list',
         cullMode: 'none',
-        frontFace: 'cw',
+        frontFace: 'ccw',
       },
       depthStencil: {
         format: DEPTH_FORMAT,

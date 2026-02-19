@@ -215,8 +215,8 @@ export class DeferredPipeline {
       },
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'none',
-        frontFace: 'cw',
+        cullMode: 'back',
+        frontFace: 'ccw',
       },
       depthStencil: {
         format: DEPTH_FORMAT,
