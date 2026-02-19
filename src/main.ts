@@ -90,8 +90,10 @@ async function main() {
 
   // Game loop
   let lastTime = performance.now();
+  let frameCount = 0;
 
   function frame() {
+    frameCount++;
     const now = performance.now();
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms
     lastTime = now;
@@ -127,7 +129,16 @@ async function main() {
 
     const drawCalls = chunkManager.getDrawCalls();
     const waterDrawCalls = chunkManager.getWaterDrawCalls();
-    pipeline.render(drawCalls, waterDrawCalls);
+
+    hud.setDrawInfo(drawCalls.length, waterDrawCalls.length);
+
+    try {
+      pipeline.render(drawCalls, waterDrawCalls);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      hud.setError(`Render: ${msg.slice(0, 120)}`);
+      console.error('[Render Error]', e);
+    }
 
     hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed(), dayNightCycle.getTimeString());
 

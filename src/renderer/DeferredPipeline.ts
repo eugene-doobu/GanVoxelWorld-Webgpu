@@ -181,6 +181,14 @@ export class DeferredPipeline {
     const vertModule = device.createShaderModule({ code: gbufferVertShader });
     const fragModule = device.createShaderModule({ code: gbufferFragShader });
 
+    // Check shader compilation
+    vertModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[gbuffer.vert] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
+    fragModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[gbuffer.frag] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
+
     this.gbufferPipeline = device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: {
@@ -207,8 +215,8 @@ export class DeferredPipeline {
       },
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
-        frontFace: 'ccw',
+        cullMode: 'none',
+        frontFace: 'cw',
       },
       depthStencil: {
         format: DEPTH_FORMAT,
@@ -274,6 +282,9 @@ export class DeferredPipeline {
     });
 
     const lightingModule = device.createShaderModule({ code: lightingShader });
+    lightingModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[lighting] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
 
     this.lightingPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({
@@ -325,6 +336,9 @@ export class DeferredPipeline {
     });
 
     const skyModule = device.createShaderModule({ code: skyShader });
+    skyModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[sky] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
 
     this.skyPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.skyBindGroupLayout] }),
@@ -753,7 +767,8 @@ export class DeferredPipeline {
     this.postProcess.updateTimeOfDay(this.dayNightCycle.timeOfDay);
     this.postProcess.renderBloomAndTonemap(encoder, swapChainView);
 
-    ctx.device.queue.submit([encoder.finish()]);
+    const commandBuffer = encoder.finish();
+    ctx.device.queue.submit([commandBuffer]);
   }
 
   private renderGBufferPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[]): void {

@@ -123,8 +123,8 @@ export class ShadowMap {
       },
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
-        frontFace: 'ccw',
+        cullMode: 'none',
+        frontFace: 'cw',
       },
       depthStencil: {
         format: DEPTH_FORMAT,

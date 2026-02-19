@@ -184,8 +184,8 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
             );
           } else {
             indexArray.push(
-              baseVertex + 1, baseVertex + 3, baseVertex + 0,
-              baseVertex + 1, baseVertex + 2, baseVertex + 3,
+              baseVertex + 0, baseVertex + 3, baseVertex + 1,
+              baseVertex + 1, baseVertex + 3, baseVertex + 2,
             );
           }
           vertexCount += 4;

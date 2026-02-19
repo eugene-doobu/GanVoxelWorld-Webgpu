@@ -35,6 +35,11 @@ export class WebGPUContext {
       console.error('WebGPU device lost:', info.message);
     });
 
+    // Catch GPU validation errors
+    ctx.device.addEventListener('uncapturederror', (event: Event) => {
+      console.error('[WebGPU Error]', (event as GPUUncapturedErrorEvent).error.message);
+    });
+
     const gpuContext = canvas.getContext('webgpu');
     if (!gpuContext) throw new Error('Failed to get WebGPU context');
     ctx.context = gpuContext;

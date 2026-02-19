@@ -5,10 +5,20 @@ export class HUD {
   private frames = 0;
   private lastFpsTime = 0;
   private fps = 0;
+  private lastError = '';
+  private drawInfo = '';
 
   constructor() {
     this.el = document.getElementById('hud');
     this.lastFpsTime = performance.now();
+  }
+
+  setError(msg: string): void {
+    this.lastError = msg;
+  }
+
+  setDrawInfo(draws: number, waterDraws: number): void {
+    this.drawInfo = `Draws: ${draws} Water: ${waterDraws}`;
   }
 
   update(cameraPos: vec3, chunkCount: number, seed: number, speed: number, timeStr?: string): void {
@@ -25,8 +35,10 @@ export class HUD {
       `FPS: ${this.fps}<br>` +
       `Pos: ${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}<br>` +
       `Chunks: ${chunkCount}<br>` +
+      `${this.drawInfo}<br>` +
       `Seed: ${seed}<br>` +
       `Speed: ${speed.toFixed(1)}` +
-      (timeStr ? `<br>Time: ${timeStr}` : '');
+      (timeStr ? `<br>Time: ${timeStr}` : '') +
+      (this.lastError ? `<br><span style="color:red">${this.lastError}</span>` : '');
   }
 }
