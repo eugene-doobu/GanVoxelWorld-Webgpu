@@ -23,6 +23,9 @@ export const enum BlockType {
   MOSSY_COBBLESTONE = 61,
   SPAWNER = 70,
   CHEST = 71,
+  TALL_GRASS = 80,
+  POPPY = 81,
+  DANDELION = 82,
 }
 
 export interface BlockData {
@@ -85,6 +88,11 @@ reg(BlockType.MOSSY_COBBLESTONE, true,              90, 108,  90, 255,  0.88,  0
 reg(BlockType.SPAWNER, true,                        27,  42,  53, 255,  0.60,  0.5,  0.10);
 reg(BlockType.CHEST, true,                         164, 114,  39, 255,  0.80,  0.0,  0.0);
 
+// Vegetation (non-solid, cross-mesh)
+reg(BlockType.TALL_GRASS, false,                    58, 148,  40, 255,  0.95,  0.0,  0.0);
+reg(BlockType.POPPY, false,                        200,  30,  30, 255,  0.90,  0.0,  0.0);
+reg(BlockType.DANDELION, false,                    240, 210,  40, 255,  0.90,  0.0,  0.0);
+
 export function getBlockData(type: number): BlockData {
   return BLOCK_DATA.get(type) ?? BLOCK_DATA.get(BlockType.AIR)!;
 }
@@ -111,7 +119,11 @@ export function isBlockWater(type: number): boolean {
 }
 
 export function isBlockCutout(type: number): boolean {
-  return type === BlockType.LEAVES;
+  return type === BlockType.LEAVES || type === BlockType.TALL_GRASS || type === BlockType.POPPY || type === BlockType.DANDELION;
+}
+
+export function isBlockCrossMesh(type: number): boolean {
+  return type === BlockType.TALL_GRASS || type === BlockType.POPPY || type === BlockType.DANDELION;
 }
 
 export function isBlockTranslucent(type: number): boolean {

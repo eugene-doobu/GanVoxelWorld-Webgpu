@@ -6,6 +6,7 @@ import { TerrainGenerator } from './TerrainGenerator';
 import { CaveGenerator } from './CaveGenerator';
 import { OreGenerator } from './OreGenerator';
 import { TreeGenerator } from './TreeGenerator';
+import { VegetationGenerator } from './VegetationGenerator';
 import { WaterSimulator } from './WaterSimulator';
 import { buildChunkMesh, ChunkNeighbors, MeshData } from '../meshing/MeshBuilder';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
@@ -44,6 +45,7 @@ export class ChunkManager {
   private caveGen: CaveGenerator;
   private oreGen: OreGenerator;
   private treeGen: TreeGenerator;
+  private vegGen: VegetationGenerator;
   private waterSim: WaterSimulator;
 
   renderDistance = Config.data.rendering.general.renderDistance;
@@ -62,6 +64,7 @@ export class ChunkManager {
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.vegGen = new VegetationGenerator(seed, this.terrainGen);
     this.waterSim = new WaterSimulator();
   }
 
@@ -78,6 +81,7 @@ export class ChunkManager {
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.vegGen = new VegetationGenerator(seed, this.terrainGen);
     this.waterSim = new WaterSimulator();
   }
 
@@ -124,6 +128,7 @@ export class ChunkManager {
       this.caveGen.generate(entry.chunk);
       this.oreGen.generate(entry.chunk);
       this.treeGen.generate(entry.chunk);
+      this.vegGen.generate(entry.chunk);
       this.waterSim.generate(entry.chunk);
 
       // Build mesh
@@ -148,6 +153,9 @@ export class ChunkManager {
 
       // Upload water mesh
       this.uploadWaterMesh(entry.chunk, meshData);
+
+      // Upload vegetation mesh
+      this.uploadVegetationMesh(entry.chunk, meshData);
 
       entry.state = ChunkState.READY;
       processed++;
@@ -203,6 +211,7 @@ export class ChunkManager {
     }
 
     this.uploadWaterMesh(entry.chunk, meshData);
+    this.uploadVegetationMesh(entry.chunk, meshData);
   }
 
   private getNeighbors(cx: number, cz: number): ChunkNeighbors {
@@ -261,6 +270,45 @@ export class ChunkManager {
       this.ctx.device.queue.writeBuffer(chunk.waterIndexBuffer, 0, meshData.waterIndices.buffer as ArrayBuffer);
       chunk.waterIndexCount = meshData.waterIndexCount;
     }
+  }
+
+  private uploadVegetationMesh(chunk: Chunk, meshData: MeshData): void {
+    chunk.vegVertexBuffer?.destroy();
+    chunk.vegIndexBuffer?.destroy();
+    chunk.vegVertexBuffer = null;
+    chunk.vegIndexBuffer = null;
+    chunk.vegIndexCount = 0;
+
+    if (meshData.vegIndexCount > 0) {
+      chunk.vegVertexBuffer = this.ctx.device.createBuffer({
+        size: meshData.vegVertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      this.ctx.device.queue.writeBuffer(chunk.vegVertexBuffer, 0, meshData.vegVertices.buffer as ArrayBuffer);
+
+      chunk.vegIndexBuffer = this.ctx.device.createBuffer({
+        size: meshData.vegIndices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      this.ctx.device.queue.writeBuffer(chunk.vegIndexBuffer, 0, meshData.vegIndices.buffer as ArrayBuffer);
+      chunk.vegIndexCount = meshData.vegIndexCount;
+    }
+  }
+
+  getVegetationDrawCalls(): ChunkDrawCall[] {
+    const calls: ChunkDrawCall[] = [];
+    for (const entry of this.chunks.values()) {
+      if (entry.state !== ChunkState.READY) continue;
+      const c = entry.chunk;
+      if (!c.vegVertexBuffer || !c.vegIndexBuffer || c.vegIndexCount === 0) continue;
+      if (!this.isChunkInFrustum(c)) continue;
+      calls.push({
+        vertexBuffer: c.vegVertexBuffer,
+        indexBuffer: c.vegIndexBuffer,
+        indexCount: c.vegIndexCount,
+      });
+    }
+    return calls;
   }
 
   getWaterDrawCalls(): ChunkDrawCall[] {

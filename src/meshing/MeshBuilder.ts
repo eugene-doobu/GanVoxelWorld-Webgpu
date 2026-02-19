@@ -1,5 +1,5 @@
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, ATLAS_TILES } from '../constants';
-import { BlockType, isBlockWater, isBlockSolid, isBlockCutout } from '../terrain/BlockTypes';
+import { BlockType, isBlockWater, isBlockSolid, isBlockCutout, isBlockCrossMesh } from '../terrain/BlockTypes';
 import { Chunk } from '../terrain/Chunk';
 
 // Face enum: TOP=0, BOTTOM=1, NORTH=2(+Z), SOUTH=3(-Z), EAST=4(+X), WEST=5(-X)
@@ -83,6 +83,11 @@ export interface MeshData {
   waterIndices: Uint32Array;
   waterVertexCount: number;
   waterIndexCount: number;
+  // Vegetation mesh (cross-mesh, separate pass with cullMode: 'none')
+  vegVertices: Float32Array;
+  vegIndices: Uint32Array;
+  vegVertexCount: number;
+  vegIndexCount: number;
 }
 
 export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = null): MeshData {
@@ -95,6 +100,11 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
   let waterVertexFloats: number[] = [];
   let waterIndexArray: number[] = [];
   let waterVertexCount = 0;
+
+  // Vegetation mesh (cross-mesh): same 28-byte vertex format as solid
+  let vegVertexFloats: number[] = [];
+  let vegIndexArray: number[] = [];
+  let vegVertexCount = 0;
 
   const uvSize = 1.0 / ATLAS_TILES;
 
@@ -135,6 +145,73 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
             );
             waterVertexCount += 4;
           }
+          continue;
+        }
+
+        // Cross-mesh vegetation blocks (X-shaped two diagonal quads)
+        if (isBlockCrossMesh(blockType)) {
+          const tileIndex = blockType as number;
+          const tileU = (tileIndex % ATLAS_TILES) * uvSize;
+          const tileV = Math.floor(tileIndex / ATLAS_TILES) * uvSize;
+
+          const wx = chunk.worldOffsetX + x;
+          const wz = chunk.worldOffsetZ + z;
+          const faceIdxPacked = 0 | (blockType << 8); // faceIdx=0 (UP) for natural lighting
+
+          // Y offsets: bottom slightly above integer, top slightly below next integer
+          // so fract(worldPos.y) gives ~0 at bottom and ~1 at top for wind animation
+          const yBot = y + 0.01;
+          const yTop = y + 0.99;
+
+          // Quad 1: diagonal (0,0)-(1,1) in XZ
+          const baseV1 = vegVertexCount;
+          // v0: bottom-left
+          vegVertexFloats.push(wx, yBot, wz);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU, tileV + uvSize);
+          vegVertexFloats.push(1.0);
+          // v1: bottom-right
+          vegVertexFloats.push(wx + 1, yBot, wz + 1);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU + uvSize, tileV + uvSize);
+          vegVertexFloats.push(1.0);
+          // v2: top-right
+          vegVertexFloats.push(wx + 1, yTop, wz + 1);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU + uvSize, tileV);
+          vegVertexFloats.push(1.0);
+          // v3: top-left
+          vegVertexFloats.push(wx, yTop, wz);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU, tileV);
+          vegVertexFloats.push(1.0);
+          // Single winding — cullMode:'none' renders both sides
+          vegIndexArray.push(baseV1 + 0, baseV1 + 2, baseV1 + 1);
+          vegIndexArray.push(baseV1 + 0, baseV1 + 3, baseV1 + 2);
+          vegVertexCount += 4;
+
+          // Quad 2: other diagonal (1,0)-(0,1) in XZ
+          const baseV2 = vegVertexCount;
+          vegVertexFloats.push(wx + 1, yBot, wz);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU, tileV + uvSize);
+          vegVertexFloats.push(1.0);
+          vegVertexFloats.push(wx, yBot, wz + 1);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU + uvSize, tileV + uvSize);
+          vegVertexFloats.push(1.0);
+          vegVertexFloats.push(wx, yTop, wz + 1);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU + uvSize, tileV);
+          vegVertexFloats.push(1.0);
+          vegVertexFloats.push(wx + 1, yTop, wz);
+          vegVertexFloats.push(faceIdxPacked);
+          vegVertexFloats.push(tileU, tileV);
+          vegVertexFloats.push(1.0);
+          vegIndexArray.push(baseV2 + 0, baseV2 + 2, baseV2 + 1);
+          vegIndexArray.push(baseV2 + 0, baseV2 + 3, baseV2 + 2);
+          vegVertexCount += 4;
+
           continue;
         }
 
@@ -217,6 +294,22 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
   const waterVerts = new Float32Array(waterVertexFloats);
   const waterInds = new Uint32Array(waterIndexArray);
 
+  // Convert vegetation mesh to typed arrays (same 28-byte format as solid)
+  const vegBuf = new ArrayBuffer(vegVertexCount * 28);
+  const vegF32 = new Float32Array(vegBuf);
+  const vegU32 = new Uint32Array(vegBuf);
+  for (let i = 0; i < vegVertexCount; i++) {
+    const srcOff = i * 7;
+    const dstOff = i * 7;
+    vegF32[dstOff + 0] = vegVertexFloats[srcOff + 0];
+    vegF32[dstOff + 1] = vegVertexFloats[srcOff + 1];
+    vegF32[dstOff + 2] = vegVertexFloats[srcOff + 2];
+    vegU32[dstOff + 3] = vegVertexFloats[srcOff + 3];
+    vegF32[dstOff + 4] = vegVertexFloats[srcOff + 4];
+    vegF32[dstOff + 5] = vegVertexFloats[srcOff + 5];
+    vegF32[dstOff + 6] = vegVertexFloats[srcOff + 6];
+  }
+
   return {
     vertices: new Float32Array(vertBuf),
     indices: new Uint32Array(indexArray),
@@ -226,6 +319,10 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
     waterIndices: waterInds,
     waterVertexCount,
     waterIndexCount: waterIndexArray.length,
+    vegVertices: new Float32Array(vegBuf),
+    vegIndices: new Uint32Array(vegIndexArray),
+    vegVertexCount,
+    vegIndexCount: vegIndexArray.length,
   };
 }
 

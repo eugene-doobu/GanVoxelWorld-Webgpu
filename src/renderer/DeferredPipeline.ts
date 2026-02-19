@@ -55,6 +55,7 @@ export class DeferredPipeline {
 
   // G-Buffer pass
   private gbufferPipeline!: GPURenderPipeline;
+  private gbufferVegetationPipeline!: GPURenderPipeline;
   private cameraUniformBuffer!: GPUBuffer;
   private cameraBindGroup!: GPUBindGroup;
   private cameraBindGroupLayout!: GPUBindGroupLayout;
@@ -190,34 +191,62 @@ export class DeferredPipeline {
       for (const msg of info.messages) console.warn(`[gbuffer.frag] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
     });
 
+    const gbufferVertexBufferLayout: GPUVertexBufferLayout = {
+      arrayStride: 28,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' },
+        { shaderLocation: 1, offset: 12, format: 'uint32' },
+        { shaderLocation: 2, offset: 16, format: 'float32x2' },
+        { shaderLocation: 3, offset: 24, format: 'float32' },
+      ],
+    };
+
+    const gbufferTargets: GPUColorTargetState[] = [
+      { format: GBUFFER_ALBEDO_FORMAT },
+      { format: GBUFFER_NORMAL_FORMAT },
+      { format: GBUFFER_MATERIAL_FORMAT },
+    ];
+
     this.gbufferPipeline = device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: {
         module: vertModule,
         entryPoint: 'main',
-        buffers: [{
-          arrayStride: 28,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'uint32' },
-            { shaderLocation: 2, offset: 16, format: 'float32x2' },
-            { shaderLocation: 3, offset: 24, format: 'float32' },
-          ],
-        }],
+        buffers: [gbufferVertexBufferLayout],
       },
       fragment: {
         module: fragModule,
         entryPoint: 'main',
-        targets: [
-          { format: GBUFFER_ALBEDO_FORMAT },
-          { format: GBUFFER_NORMAL_FORMAT },
-          { format: GBUFFER_MATERIAL_FORMAT },
-        ],
+        targets: gbufferTargets,
       },
       primitive: {
         topology: 'triangle-list',
         cullMode: 'back',
         frontFace: 'ccw',
+      },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+      },
+    });
+
+    // Vegetation pipeline: same shaders, same layout, but cullMode: 'none'
+    this.gbufferVegetationPipeline = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module: vertModule,
+        entryPoint: 'main',
+        buffers: [gbufferVertexBufferLayout],
+      },
+      fragment: {
+        module: fragModule,
+        entryPoint: 'main',
+        targets: gbufferTargets,
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none',
       },
       depthStencil: {
         format: DEPTH_FORMAT,
@@ -521,6 +550,9 @@ export class DeferredPipeline {
         { binding: 3, resource: normTex.createView() },
       ],
     });
+
+    // Pass atlas to shadow map for cutout shadow rendering
+    this.shadowMap.setAtlasTexture(albedoTexture, this.atlasSampler);
   }
 
   private createFlatNormalTexture(): GPUTexture {
@@ -714,15 +746,15 @@ export class DeferredPipeline {
     this.ctx.device.queue.writeBuffer(this.pointLightBuffer, 0, f32.buffer, 0, 16 + lights.length * 32);
   }
 
-  render(drawCalls: ChunkDrawCall[], waterDrawCalls?: ChunkDrawCall[]): void {
+  render(drawCalls: ChunkDrawCall[], waterDrawCalls?: ChunkDrawCall[], vegDrawCalls?: ChunkDrawCall[]): void {
     const ctx = this.ctx;
     const encoder = ctx.device.createCommandEncoder();
 
     // 1. Shadow Pass
-    this.shadowMap.renderShadowPass(encoder, drawCalls);
+    this.shadowMap.renderShadowPass(encoder, drawCalls, vegDrawCalls);
 
     // 2. G-Buffer Pass
-    this.renderGBufferPass(encoder, drawCalls);
+    this.renderGBufferPass(encoder, drawCalls, vegDrawCalls);
 
     // 3. SSAO Pass
     this.ssao.renderSSAO(encoder, this.gBuffer.depthView, this.gBuffer.normalView);
@@ -768,7 +800,7 @@ export class DeferredPipeline {
     ctx.device.queue.submit([commandBuffer]);
   }
 
-  private renderGBufferPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[]): void {
+  private renderGBufferPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[], vegDrawCalls?: ChunkDrawCall[]): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -809,6 +841,23 @@ export class DeferredPipeline {
       pass.setVertexBuffer(0, dc.vertexBuffer);
       pass.setIndexBuffer(dc.indexBuffer, 'uint32');
       pass.drawIndexed(dc.indexCount);
+    }
+
+    // Vegetation: switch to vegetation pipeline (cullMode: 'none'), same bind groups
+    if (vegDrawCalls && vegDrawCalls.length > 0) {
+      pass.setPipeline(this.gbufferVegetationPipeline);
+      // Bind groups are shared (same layout), re-set them for the new pipeline
+      pass.setBindGroup(0, this.cameraBindGroup);
+      if (this.textureBindGroup) {
+        pass.setBindGroup(1, this.textureBindGroup);
+      }
+
+      for (const dc of vegDrawCalls) {
+        if (dc.indexCount === 0) continue;
+        pass.setVertexBuffer(0, dc.vertexBuffer);
+        pass.setIndexBuffer(dc.indexBuffer, 'uint32');
+        pass.drawIndexed(dc.indexCount);
+      }
     }
 
     pass.end();

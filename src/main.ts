@@ -129,11 +129,12 @@ async function main() {
 
     const drawCalls = chunkManager.getDrawCalls();
     const waterDrawCalls = chunkManager.getWaterDrawCalls();
+    const vegDrawCalls = chunkManager.getVegetationDrawCalls();
 
     hud.setDrawInfo(drawCalls.length, waterDrawCalls.length);
 
     try {
-      pipeline.render(drawCalls, waterDrawCalls);
+      pipeline.render(drawCalls, waterDrawCalls, vegDrawCalls);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       hud.setError(`Render: ${msg.slice(0, 120)}`);

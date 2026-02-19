@@ -1,5 +1,5 @@
 import { TILE_SIZE, ATLAS_TILES, ATLAS_PIXEL_SIZE } from '../constants';
-import { getBlockColor, getBlockMaterial, ALL_BLOCK_TYPES } from '../terrain/BlockTypes';
+import { getBlockColor, getBlockMaterial, ALL_BLOCK_TYPES, isBlockCrossMesh } from '../terrain/BlockTypes';
 import { BlockType } from '../terrain/BlockTypes';
 import { WebGPUContext } from './WebGPUContext';
 
@@ -348,6 +348,91 @@ function patternChest(
   return mixColor(br, bg, bb, f);
 }
 
+function patternTallGrass(
+  px: number, py: number,
+): [number, number, number, number] {
+  // 5 grass blades growing from bottom to top
+  const blades = [
+    { cx: 3, w: 1.5 },
+    { cx: 6, w: 1.2 },
+    { cx: 8, w: 1.8 },
+    { cx: 11, w: 1.3 },
+    { cx: 13, w: 1.0 },
+  ];
+  const h = hash(px, py, 500);
+  const iy = 15 - py; // invert: 0=top, 15=bottom
+  for (const blade of blades) {
+    // Blade narrows toward the top
+    const widthAtY = blade.w * (1.0 - iy / 18.0);
+    if (Math.abs(px - blade.cx) < widthAtY) {
+      // Gradient: darker at bottom, lighter at top
+      const brightness = 0.6 + 0.4 * (iy / 15.0);
+      const r = clamp(Math.round(45 * brightness + h * 15), 0, 255);
+      const g = clamp(Math.round(140 * brightness + h * 20), 0, 255);
+      const b = clamp(Math.round(30 * brightness + h * 10), 0, 255);
+      return [r, g, b, 255];
+    }
+  }
+  return [0, 0, 0, 0]; // transparent
+}
+
+function patternPoppy(
+  px: number, py: number,
+): [number, number, number, number] {
+  const h = hash(px, py, 510);
+  const iy = 15 - py; // 0=top, 15=bottom
+
+  // Stem: thin vertical line in center
+  if (iy < 10 && Math.abs(px - 8) < 1) {
+    const g = clamp(Math.round(100 + h * 40), 0, 255);
+    return [30, g, 20, 255];
+  }
+
+  // Flower head: circle at top
+  const dx = px - 8;
+  const dy = iy - 12;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 3.5) {
+    // Red petals
+    const r = clamp(Math.round(200 + h * 40), 0, 255);
+    const g = clamp(Math.round(20 + h * 15), 0, 255);
+    const b = clamp(Math.round(20 + h * 10), 0, 255);
+    // Center yellow
+    if (dist < 1.2) {
+      return [clamp(Math.round(230 + h * 20), 0, 255), clamp(Math.round(200 + h * 20), 0, 255), 40, 255];
+    }
+    return [r, g, b, 255];
+  }
+
+  return [0, 0, 0, 0]; // transparent
+}
+
+function patternDandelion(
+  px: number, py: number,
+): [number, number, number, number] {
+  const h = hash(px, py, 520);
+  const iy = 15 - py; // 0=top, 15=bottom
+
+  // Stem
+  if (iy < 10 && Math.abs(px - 8) < 1) {
+    const g = clamp(Math.round(110 + h * 30), 0, 255);
+    return [35, g, 25, 255];
+  }
+
+  // Yellow flower head: smaller circle
+  const dx = px - 8;
+  const dy = iy - 12;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 2.8) {
+    const r = clamp(Math.round(240 + h * 15), 0, 255);
+    const g = clamp(Math.round(200 + h * 20), 0, 255);
+    const b = clamp(Math.round(30 + h * 15), 0, 255);
+    return [r, g, b, 255];
+  }
+
+  return [0, 0, 0, 0]; // transparent
+}
+
 function patternDefault(
   px: number, py: number, br: number, bg: number, bb: number,
 ): [number, number, number] {
@@ -551,6 +636,16 @@ function generateHeightMap(blockType: number): number[][] {
         }
       break;
     }
+    case BlockType.TALL_GRASS:
+    case BlockType.POPPY:
+    case BlockType.DANDELION: {
+      // Nearly flat for vegetation
+      for (let y = 0; y < TILE_SIZE; y++)
+        for (let x = 0; x < TILE_SIZE; x++) {
+          h[y][x] = hash(x, y, 430) * 0.05;
+        }
+      break;
+    }
     default: {
       // Subtle default bumps
       for (let y = 0; y < TILE_SIZE; y++)
@@ -587,6 +682,9 @@ function getNormalStrength(blockType: number): number {
     case BlockType.DIAMOND_ORE: return 1.3;
     case BlockType.SPAWNER: return 1.5;
     case BlockType.CHEST: return 1.0;
+    case BlockType.TALL_GRASS:
+    case BlockType.POPPY:
+    case BlockType.DANDELION: return 0.1;
     default: return 0.5;
   }
 }
@@ -658,7 +756,20 @@ export class TextureAtlas {
           pixels[pixelIndex + 0] = r;
           pixels[pixelIndex + 1] = g;
           pixels[pixelIndex + 2] = b;
-          pixels[pixelIndex + 3] = ba;
+          // Vegetation blocks get per-pixel alpha from their pattern function
+          if (isBlockCrossMesh(blockType)) {
+            let alpha = 255;
+            if (blockType === BlockType.TALL_GRASS) {
+              alpha = patternTallGrass(x, y)[3];
+            } else if (blockType === BlockType.POPPY) {
+              alpha = patternPoppy(x, y)[3];
+            } else if (blockType === BlockType.DANDELION) {
+              alpha = patternDandelion(x, y)[3];
+            }
+            pixels[pixelIndex + 3] = alpha;
+          } else {
+            pixels[pixelIndex + 3] = ba;
+          }
         }
       }
     }
@@ -716,6 +827,18 @@ export class TextureAtlas {
         return patternSpawner(px, py, br, bg, bb);
       case BlockType.CHEST:
         return patternChest(px, py, br, bg, bb);
+      case BlockType.TALL_GRASS: {
+        const [r, g, b] = patternTallGrass(px, py);
+        return [r, g, b];
+      }
+      case BlockType.POPPY: {
+        const [r, g, b] = patternPoppy(px, py);
+        return [r, g, b];
+      }
+      case BlockType.DANDELION: {
+        const [r, g, b] = patternDandelion(px, py);
+        return [r, g, b];
+      }
       default:
         return patternDefault(px, py, br, bg, bb);
     }

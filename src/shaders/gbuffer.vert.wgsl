@@ -20,6 +20,7 @@ struct VertexOutput {
   @location(1) texCoord: vec2<f32>,
   @location(2) @interpolate(flat) normalIndex: u32,
   @location(3) ao: f32,
+  @location(4) origPos: vec3<f32>,
 };
 
 @vertex
@@ -30,6 +31,7 @@ fn main(input: VertexInput) -> VertexOutput {
   let blockType = input.normalIndex >> 8u;
 
   var worldPos = input.position;
+  output.origPos = input.position; // save pre-wind position for stable hash
 
   // Leaves wind animation (BlockType.LEAVES = 51)
   if (blockType == 51u) {
@@ -40,6 +42,18 @@ fn main(input: VertexInput) -> VertexOutput {
     worldPos.x += sin(freq1) * windStrength;
     worldPos.z += cos(freq2) * windStrength * 0.7;
     worldPos.y += sin(freq1 + freq2) * windStrength * 0.3;
+  }
+
+  // Vegetation wind animation (TALL_GRASS=80, POPPY=81, DANDELION=82)
+  if (blockType >= 80u && blockType <= 82u) {
+    let windTime = camera.time.x;
+    // Height interpolation: bottom is anchored, top sways
+    let heightFactor = fract(worldPos.y); // ~0.01 at bottom, ~0.99 at top
+    let windStrength = 0.12 * heightFactor;
+    let freq1 = worldPos.x * 1.8 + worldPos.z * 0.9 + windTime * 3.0;
+    let freq2 = worldPos.x * 0.6 + worldPos.z * 1.6 + windTime * 2.2;
+    worldPos.x += sin(freq1) * windStrength;
+    worldPos.z += cos(freq2) * windStrength * 0.8;
   }
 
   output.clipPos = camera.viewProj * vec4<f32>(worldPos, 1.0);

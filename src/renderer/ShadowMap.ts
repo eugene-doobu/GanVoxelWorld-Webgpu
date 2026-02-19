@@ -4,6 +4,8 @@ import { Config } from '../config/Config';
 import { WebGPUContext } from './WebGPUContext';
 
 import shadowVertShader from '../shaders/shadow.vert.wgsl?raw';
+import shadowCutoutVertShader from '../shaders/shadow_cutout.vert.wgsl?raw';
+import shadowCutoutFragShader from '../shaders/shadow_cutout.frag.wgsl?raw';
 
 export interface ChunkDrawCall {
   vertexBuffer: GPUBuffer;
@@ -43,7 +45,10 @@ export class ShadowMap {
   cascadeViews: GPUTextureView[] = [];
 
   pipeline!: GPURenderPipeline;
+  cutoutPipeline!: GPURenderPipeline;
   bindGroupLayout!: GPUBindGroupLayout;
+  private atlasBindGroupLayout!: GPUBindGroupLayout;
+  private atlasBindGroup: GPUBindGroup | null = null;
 
   uniformBuffer!: GPUBuffer;         // ShadowUniforms: lightViewProj[3] + cascadeSplits = 208 bytes
   cascadeIndexBuffers: GPUBuffer[] = [];
@@ -107,32 +112,69 @@ export class ShadowMap {
 
     const vertModule = device.createShaderModule({ code: shadowVertShader });
 
+    const shadowVertexBufferLayout: GPUVertexBufferLayout = {
+      arrayStride: 28,
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3' },
+        { shaderLocation: 1, offset: 12, format: 'uint32' },
+        { shaderLocation: 2, offset: 16, format: 'float32x2' },
+      ],
+    };
+
+    const shadowDepthStencil: GPUDepthStencilState = {
+      format: DEPTH_FORMAT,
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+      depthBias: 2,
+      depthBiasSlopeScale: 1.5,
+    };
+
     this.pipeline = device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: {
         module: vertModule,
         entryPoint: 'main',
-        buffers: [{
-          arrayStride: 28,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'uint32' },
-            { shaderLocation: 2, offset: 16, format: 'float32x2' },
-          ],
-        }],
+        buffers: [shadowVertexBufferLayout],
       },
       primitive: {
         topology: 'triangle-list',
         cullMode: 'none',
         frontFace: 'ccw',
       },
-      depthStencil: {
-        format: DEPTH_FORMAT,
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-        depthBias: 2,
-        depthBiasSlopeScale: 1.5,
+      depthStencil: shadowDepthStencil,
+    });
+
+    // Cutout pipeline: for vegetation/leaves alpha testing in shadow pass
+    this.atlasBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      ],
+    });
+
+    const cutoutVertModule = device.createShaderModule({ code: shadowCutoutVertShader });
+    const cutoutFragModule = device.createShaderModule({ code: shadowCutoutFragShader });
+
+    this.cutoutPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({
+        bindGroupLayouts: [this.bindGroupLayout, this.atlasBindGroupLayout],
+      }),
+      vertex: {
+        module: cutoutVertModule,
+        entryPoint: 'main',
+        buffers: [shadowVertexBufferLayout],
       },
+      fragment: {
+        module: cutoutFragModule,
+        entryPoint: 'main',
+        targets: [],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none',
+        frontFace: 'ccw',
+      },
+      depthStencil: shadowDepthStencil,
     });
   }
 
@@ -169,6 +211,16 @@ export class ShadowMap {
         ],
       }));
     }
+  }
+
+  setAtlasTexture(texture: GPUTexture, sampler: GPUSampler): void {
+    this.atlasBindGroup = this.ctx.device.createBindGroup({
+      layout: this.atlasBindGroupLayout,
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: texture.createView() },
+      ],
+    });
   }
 
   updateLightMatrices(cameraPos: vec3, cameraViewProj: mat4, sunDir: vec3): void {
@@ -239,7 +291,7 @@ export class ShadowMap {
     mat4.multiply(lvp, lightProj, lightView);
   }
 
-  renderShadowPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[]): void {
+  renderShadowPass(encoder: GPUCommandEncoder, drawCalls: ChunkDrawCall[], vegDrawCalls?: ChunkDrawCall[]): void {
     const cascadeCount = Config.data.rendering.shadows.cascadeCount;
     for (let c = 0; c < cascadeCount; c++) {
       const pass = encoder.beginRenderPass({
@@ -260,6 +312,19 @@ export class ShadowMap {
         pass.setVertexBuffer(0, dc.vertexBuffer);
         pass.setIndexBuffer(dc.indexBuffer, 'uint32');
         pass.drawIndexed(dc.indexCount);
+      }
+
+      // Vegetation: use cutout pipeline for alpha-tested shadows
+      if (vegDrawCalls && this.atlasBindGroup) {
+        pass.setPipeline(this.cutoutPipeline);
+        pass.setBindGroup(0, this.bindGroups[c]);
+        pass.setBindGroup(1, this.atlasBindGroup);
+        for (const dc of vegDrawCalls) {
+          if (dc.indexCount === 0) continue;
+          pass.setVertexBuffer(0, dc.vertexBuffer);
+          pass.setIndexBuffer(dc.indexBuffer, 'uint32');
+          pass.drawIndexed(dc.indexCount);
+        }
       }
 
       pass.end();

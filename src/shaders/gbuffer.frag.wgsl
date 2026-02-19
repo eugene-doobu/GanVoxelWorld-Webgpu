@@ -43,35 +43,58 @@ struct VertexOutput {
   @location(1) texCoord: vec2<f32>,
   @location(2) @interpolate(flat) normalIndex: u32,
   @location(3) ao: f32,
+  @location(4) origPos: vec3<f32>,
 };
 
 @fragment
-fn main(input: VertexOutput) -> GBufferOutput {
+fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBufferOutput {
   var output: GBufferOutput;
 
   // Extract face index and block type from packed normalIndex
   let faceIdx = input.normalIndex & 0xFFu;
   let blockType = input.normalIndex >> 8u;
 
+  // textureSampleLevel(lod=0): no implicit derivatives needed,
+  // safe in non-uniform control flow. Our atlas uses nearest filtering
+  // with no mipmaps, so explicit LOD 0 is equivalent to textureSample().
+
   // Leaves alpha cutout (BlockType.LEAVES = 51)
+  // Uses texCoord-derived tile UV (frame-stable) + block position for per-block variation
   if (blockType == 51u) {
-    let checkerSize = 3.0;
-    let cx = floor(input.texCoord.x * 16.0 / checkerSize);
-    let cy = floor(input.texCoord.y * 16.0 / checkerSize);
-    let pattern = fract(sin(cx * 12.9898 + cy * 78.233) * 43758.5453);
+    let tileUV = fract(input.texCoord * 16.0); // per-tile local UV [0,1]
+    let cell = floor(tileUV * 4.0);            // 4x4 grid within each face
+    let bp = floor(input.origPos);             // integer block coords (stable)
+    let seed = cell.x * 12.9898 + cell.y * 78.233
+             + bp.x * 45.164 + bp.y * 93.72 + bp.z * 27.56
+             + f32(faceIdx) * 61.37;
+    let pattern = fract(sin(seed) * 43758.5453);
     if (pattern < 0.35) { discard; }
   }
 
-  let albedo = textureSample(atlasTexture, atlasSampler, input.texCoord);
-  let mat = textureSample(materialAtlas, atlasSampler, input.texCoord);
+  // Vegetation cutout (TALL_GRASS=80, POPPY=81, DANDELION=82)
+  if (blockType >= 80u && blockType <= 82u) {
+    let vegAlpha = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0).a;
+    if (vegAlpha < 0.5) { discard; }
+  }
+
+  let albedo = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0);
+  let mat = textureSampleLevel(materialAtlas, atlasSampler, input.texCoord, 0.0);
+  let normalSample = textureSampleLevel(normalAtlas, atlasSampler, input.texCoord, 0.0).rgb;
 
   let idx = min(faceIdx, 5u);
 
-  // Sample tangent-space normal from normal atlas and transform to world space
-  let normalSample = textureSample(normalAtlas, atlasSampler, input.texCoord).rgb;
-  let tangentNormal = normalSample * 2.0 - 1.0;
-  let tbn = buildTBN(idx);
-  let worldNormal = normalize(tbn * tangentNormal);
+  var worldNormal: vec3<f32>;
+  if (blockType >= 80u && blockType <= 82u) {
+    // Vegetation: use UP normal directly (TBN is meaningless for cross-mesh)
+    // front_facing handles two-sided lighting
+    worldNormal = vec3f(0.0, 1.0, 0.0);
+    if (!frontFacing) { worldNormal = -worldNormal; }
+  } else {
+    // Solid blocks: transform tangent-space normal via TBN
+    let tangentNormal = normalSample * 2.0 - 1.0;
+    let tbn = buildTBN(idx);
+    worldNormal = normalize(tbn * tangentNormal);
+  }
 
   output.albedo = vec4<f32>(albedo.rgb, mat.b);  // A = emissive
   output.normal = vec4<f32>(worldNormal * 0.5 + 0.5, 1.0);

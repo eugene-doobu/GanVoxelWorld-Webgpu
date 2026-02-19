@@ -50,58 +50,128 @@ fn hash(p: vec2<f32>) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+// === 3D Simplex Noise (Ashima Arts / Stefan Gustavson) ===
+
+fn mod289_3(x: vec3<f32>) -> vec3<f32> { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+fn mod289_4(x: vec4<f32>) -> vec4<f32> { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+fn permute4(x: vec4<f32>) -> vec4<f32> { return mod289_4(((x * 34.0) + 10.0) * x); }
+fn taylorInvSqrt4(r: vec4<f32>) -> vec4<f32> { return 1.79284291400159 - 0.85373472095314 * r; }
+
+fn snoise3d(v: vec3<f32>) -> f32 {
+  let C = vec2<f32>(1.0 / 6.0, 1.0 / 3.0);
+  let D = vec4<f32>(0.0, 0.5, 1.0, 2.0);
+
+  // First corner
+  var i = floor(v + dot(v, vec3<f32>(C.y)));
+  let x0 = v - i + dot(i, vec3<f32>(C.x));
+
+  // Other corners
+  let g = step(x0.yzx, x0.xyz);
+  let l = 1.0 - g;
+  let i1 = min(g.xyz, l.zxy);
+  let i2 = max(g.xyz, l.zxy);
+
+  let x1 = x0 - i1 + C.x;
+  let x2 = x0 - i2 + C.y;   // 2.0 * C.x = 1/3
+  let x3 = x0 - D.yyy;       // -1.0 + 3.0 * C.x = -0.5
+
+  // Permutations
+  i = mod289_3(i);
+  let p = permute4(permute4(permute4(
+    i.z + vec4<f32>(0.0, i1.z, i2.z, 1.0))
+  + i.y + vec4<f32>(0.0, i1.y, i2.y, 1.0))
+  + i.x + vec4<f32>(0.0, i1.x, i2.x, 1.0));
+
+  // Gradients: 7x7 points over a square, mapped onto an octahedron
+  let n_ = 0.142857142857; // 1.0 / 7.0
+  let ns = n_ * D.wyz - D.xzx;
+
+  let j = p - 49.0 * floor(p * ns.z * ns.z);
+
+  let x_ = floor(j * ns.z);
+  let y_ = floor(j - 7.0 * x_);
+
+  let x = x_ * ns.x + ns.y;
+  let y = y_ * ns.x + ns.y;
+  let h = 1.0 - abs(x) - abs(y);
+
+  let b0 = vec4<f32>(x.xy, y.xy);
+  let b1 = vec4<f32>(x.zw, y.zw);
+
+  let s0 = floor(b0) * 2.0 + 1.0;
+  let s1 = floor(b1) * 2.0 + 1.0;
+  let sh = -step(h, vec4<f32>(0.0));
+
+  let a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  let a1 = b1.xzyw + s1.xzyw * sh.zzww;
+
+  var p0 = vec3<f32>(a0.xy, h.x);
+  var p1 = vec3<f32>(a0.zw, h.y);
+  var p2 = vec3<f32>(a1.xy, h.z);
+  var p3 = vec3<f32>(a1.zw, h.w);
+
+  // Normalise gradients
+  let norm = taylorInvSqrt4(vec4<f32>(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
+  p0 *= norm.x;
+  p1 *= norm.y;
+  p2 *= norm.z;
+  p3 *= norm.w;
+
+  // Mix final noise value
+  var m = max(vec4<f32>(0.6) - vec4<f32>(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), vec4<f32>(0.0));
+  m = m * m;
+  // Returns [-1, 1], remap to [0, 1]
+  return 42.0 * dot(m * m, vec4<f32>(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3))) * 0.5 + 0.5;
+}
+
 // === Volumetric cloud functions ===
-const CLOUD_MIN_Y: f32 = 200.0;
-const CLOUD_MAX_Y: f32 = 350.0;
-const CLOUD_STEPS: u32 = 16u;
+const CLOUD_MIN_Y: f32 = 300.0;
+const CLOUD_MAX_Y: f32 = 500.0;
+const CLOUD_STEPS: u32 = 40u;
+const CLOUD_LIGHT_STEPS: u32 = 5u;
 
-fn hash3d(p: vec3<f32>) -> f32 {
-  var p3 = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yxz + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+fn remap01(v: f32, low: f32, high: f32) -> f32 {
+  return clamp((v - low) / (high - low), 0.0, 1.0);
 }
 
-fn cloudNoise(p: vec3<f32>) -> f32 {
-  let i = floor(p);
-  let f = fract(p);
-  let u = f * f * (3.0 - 2.0 * f);
-
-  return mix(
-    mix(mix(hash3d(i), hash3d(i + vec3<f32>(1.0, 0.0, 0.0)), u.x),
-        mix(hash3d(i + vec3<f32>(0.0, 1.0, 0.0)), hash3d(i + vec3<f32>(1.0, 1.0, 0.0)), u.x), u.y),
-    mix(mix(hash3d(i + vec3<f32>(0.0, 0.0, 1.0)), hash3d(i + vec3<f32>(1.0, 0.0, 1.0)), u.x),
-        mix(hash3d(i + vec3<f32>(0.0, 1.0, 1.0)), hash3d(i + vec3<f32>(1.0, 1.0, 1.0)), u.x), u.y),
-    u.z
-  );
+fn cloudHeightGradient(h: f32) -> f32 {
+  return smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.5, h);
 }
 
-fn fbmCloud(p: vec3<f32>) -> f32 {
-  var val = 0.0;
-  var amp = 0.5;
-  var pos = p;
-  for (var i = 0; i < 4; i++) {
-    val += amp * cloudNoise(pos);
-    pos *= 2.0;
-    amp *= 0.5;
+fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
+  let heightFrac = clamp((worldPos.y - CLOUD_MIN_Y) / (CLOUD_MAX_Y - CLOUD_MIN_Y), 0.0, 1.0);
+  let hGrad = cloudHeightGradient(heightFrac);
+  if (hGrad < 0.001) { return 0.0; }
+
+  let wind = vec3<f32>(time * 5.0, time * 0.3, time * 2.0);
+
+  // Base shape: 3-octave FBM — higher freq for less blobby clouds
+  let bp = (worldPos + wind) * 0.0018;
+  var shape = snoise3d(bp)         * 0.625
+            + snoise3d(bp * 2.03)  * 0.25
+            + snoise3d(bp * 4.01)  * 0.125;
+
+  // Sparse coverage — wider ramp for softer edges
+  shape = remap01(shape, 0.48, 0.85);
+  var density = shape * hGrad;
+
+  if (density < 0.01) { return 0.0; }
+
+  // Detail erosion breaks up solid blobs
+  if (!cheap) {
+    let dp = (worldPos + wind * 0.3) * 0.008;
+    let detail = snoise3d(dp)          * 0.5
+               + snoise3d(dp * 2.37)   * 0.3
+               + snoise3d(dp * 5.09)   * 0.2;
+    density -= detail * 0.15;
+    density = max(density, 0.0);
   }
-  return val;
-}
 
-fn sampleCloudDensity(worldPos: vec3<f32>, time: f32) -> f32 {
-  let windOffset = vec3<f32>(time * 5.0, 0.0, time * 2.0);
-  let p = (worldPos + windOffset) * 0.005;
-
-  let noise = fbmCloud(p);
-  let density = smoothstep(0.4, 0.7, noise);
-
-  let heightFraction = (worldPos.y - CLOUD_MIN_Y) / (CLOUD_MAX_Y - CLOUD_MIN_Y);
-  let heightFade = smoothstep(0.0, 0.2, heightFraction) * smoothstep(1.0, 0.8, heightFraction);
-
-  return density * heightFade;
+  return density;
 }
 
 fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, sunColor: vec3<f32>, time: f32) -> vec4<f32> {
-  if (rayDir.y <= 0.001) {
+  if (rayDir.y <= 0.002) {
     return vec4<f32>(0.0);
   }
 
@@ -113,45 +183,64 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
   }
 
   let tStart = max(tMin, 0.0);
-  let tEnd = min(tMax, 5000.0);
+  let tEnd = min(tMax, 8000.0);
   let stepSize = (tEnd - tStart) / f32(CLOUD_STEPS);
 
+  let cosTheta = dot(rayDir, sunDir);
+  let silverLining = pow(clamp(cosTheta, 0.0, 1.0), 5.0);
+
   var transmittance = 1.0;
-  var lightEnergy = 0.0;
+  var scatteredLight = vec3<f32>(0.0);
+  let lightStepSize = 35.0;
+
+  // Cloud palette — shadow matches sky, lit matches sunlight
+  let shadowColor = vec3<f32>(0.55, 0.65, 0.85);
+  let litColor = sunColor * 0.95 + vec3<f32>(0.05);
 
   for (var i = 0u; i < CLOUD_STEPS; i++) {
     let t = tStart + (f32(i) + 0.5) * stepSize;
     let pos = rayOrigin + rayDir * t;
 
-    let density = sampleCloudDensity(pos, time);
-    if (density < 0.01) {
-      continue;
+    let density = sampleCloudDensity(pos, time, false);
+    if (density < 0.01) { continue; }
+
+    let extinction = density * 0.3;
+
+    // Light march toward sun
+    var lightOD = 0.0;
+    for (var j = 1u; j <= CLOUD_LIGHT_STEPS; j++) {
+      let lPos = pos + sunDir * lightStepSize * f32(j);
+      lightOD += sampleCloudDensity(lPos, time, true) * lightStepSize;
     }
 
-    let extinction = density * 0.8;
-    let sampleTransmittance = exp(-extinction * stepSize);
+    // Beer-Lambert with gentle absorption
+    let beer = exp(-lightOD * 0.15);
 
-    // Sun-direction light marching (3 steps)
-    var lightDensity = 0.0;
-    let lightStep = 30.0;
-    for (var j = 1u; j <= 3u; j++) {
-      let lightPos = pos + sunDir * lightStep * f32(j);
-      lightDensity += sampleCloudDensity(lightPos, time);
-    }
-    let lightTransmittance = exp(-lightDensity * 0.5);
+    // Multi-scatter floor: deep cloud interiors stay ~35% bright
+    let brightness = beer * 0.65 + 0.35;
 
-    lightEnergy += density * transmittance * lightTransmittance * stepSize;
-    transmittance *= sampleTransmittance;
+    // Warm sunlit ↔ cool sky-blue shadow
+    var cloudColor = mix(shadowColor, litColor, beer) * brightness;
 
-    if (transmittance < 0.01) {
-      break;
-    }
+    // Silver lining: bright sun-colored rim on backlit edges
+    cloudColor += sunColor * silverLining * beer * 0.5;
+
+    let sampleTrans = exp(-extinction * stepSize);
+
+    // Energy-conserving integration
+    let sampleScatter = cloudColor * density;
+    scatteredLight += transmittance * sampleScatter * (1.0 - sampleTrans) / max(extinction, 0.0001);
+    transmittance *= sampleTrans;
+
+    if (transmittance < 0.01) { break; }
   }
 
-  let cloudColor = sunColor * lightEnergy * 0.15 + vec3<f32>(0.7, 0.75, 0.8) * lightEnergy * 0.05;
-  let alpha = 1.0 - transmittance;
+  // Aerial perspective — distant clouds fade toward sky
+  let avgDist = (tStart + tEnd) * 0.5;
+  let aerialFade = exp(-avgDist * 0.0001);
+  let alpha = (1.0 - transmittance) * aerialFade;
 
-  return vec4<f32>(cloudColor, alpha);
+  return vec4<f32>(scatteredLight, alpha);
 }
 
 @fragment

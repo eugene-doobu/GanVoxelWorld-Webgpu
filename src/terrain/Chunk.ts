@@ -16,6 +16,11 @@ export class Chunk {
   waterIndexBuffer: GPUBuffer | null = null;
   waterIndexCount = 0;
 
+  // Vegetation GPU resources
+  vegVertexBuffer: GPUBuffer | null = null;
+  vegIndexBuffer: GPUBuffer | null = null;
+  vegIndexCount = 0;
+
   constructor(chunkX: number, chunkZ: number) {
     this.chunkX = chunkX;
     this.chunkZ = chunkZ;
@@ -67,5 +72,11 @@ export class Chunk {
     this.waterVertexBuffer = null;
     this.waterIndexBuffer = null;
     this.waterIndexCount = 0;
+
+    this.vegVertexBuffer?.destroy();
+    this.vegIndexBuffer?.destroy();
+    this.vegVertexBuffer = null;
+    this.vegIndexBuffer = null;
+    this.vegIndexCount = 0;
   }
 }
