@@ -50,7 +50,7 @@ struct PointLightBuffer {
 
 // ====================== Constants ======================
 const PI: f32 = 3.14159265359;
-const FOG_COLOR_DAY = vec3<f32>(0.75, 0.85, 0.95);
+const FOG_COLOR_DAY = vec3<f32>(0.40, 0.50, 0.62);
 const FOG_COLOR_NIGHT = vec3<f32>(0.02, 0.02, 0.05);
 
 // ====================== Fullscreen Vertex ======================
@@ -160,7 +160,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   // sRGB → linear approximation (slightly lifted for voxel aesthetic)
-  let albedo = pow(albedoSample.rgb, vec3<f32>(1.8));
+  let albedo = pow(albedoSample.rgb, vec3<f32>(2.2));
   let emissive = albedoSample.a;
   let normal = normalize(normalSample.rgb * 2.0 - 1.0);
   let roughness = materialSample.r;

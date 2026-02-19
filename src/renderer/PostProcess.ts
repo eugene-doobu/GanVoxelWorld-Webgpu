@@ -22,9 +22,9 @@ export class PostProcess {
   hdrTexture!: GPUTexture;
   hdrTextureView!: GPUTextureView;
 
-  // HDR copy for SSR (SSR reads scene color while writing to HDR)
-  private hdrCopyTexture!: GPUTexture;
-  private hdrCopyTextureView!: GPUTextureView;
+  // HDR copy for SSR + water refraction (read scene color while writing to HDR)
+  hdrCopyTexture!: GPUTexture;
+  hdrCopyTextureView!: GPUTextureView;
 
   // Bloom mip chain
   private bloomMips: GPUTexture[] = [];
@@ -121,7 +121,7 @@ export class PostProcess {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this.tonemapParamsBuffer, 0, new Float32Array([
-      bloom.intensity, 1.2, 0, 0,
+      bloom.intensity, 0.7, 0, 0,
     ]));
 
     // Volumetric uniforms
@@ -435,8 +435,8 @@ export class PostProcess {
     f[25] = sunColor[1];
     f[26] = sunColor[2];
     f[27] = sunIntensity;
-    f[28] = 0.35;                              // density
-    f[29] = 0.6;                               // scattering anisotropy (g)
+    f[28] = 0.04;                              // density (was 0.35 — caused extreme washout)
+    f[29] = 0.75;                              // scattering anisotropy (g) — tighter forward lobe
     f[30] = 120.0;                             // max ray march distance
     f[31] = 16.0;                              // num steps
     this.ctx.device.queue.writeBuffer(this.volumetricUniformBuffer, 0, f);
@@ -538,7 +538,7 @@ export class PostProcess {
       bloom.threshold, 0.5, 0, 0,
     ]));
     this.ctx.device.queue.writeBuffer(this.tonemapParamsBuffer, 0, new Float32Array([
-      bloom.intensity, 1.2, 0, 0,
+      bloom.intensity, 0.7, 0, 0,
     ]));
   }
 

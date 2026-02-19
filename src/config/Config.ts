@@ -174,7 +174,7 @@ class ConfigManager {
         shadows: { cascadeCount: 3, mapSize: 2048, cascadeSplits: [20, 60, 160] },
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },
-        fog: { startRatio: 0.75, endRatio: 1.0 },
+        fog: { startRatio: 0.85, endRatio: 1.15 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,

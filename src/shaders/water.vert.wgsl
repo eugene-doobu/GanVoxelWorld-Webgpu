@@ -20,9 +20,12 @@ fn main(input: VertexInput) -> VertexOutput {
   var out: VertexOutput;
   var pos = input.position;
 
-  // Wave animation (vertical displacement)
-  let wave = sin(pos.x * 1.5 + uniforms.time * 2.0) * 0.05
-           + sin(pos.z * 2.0 + uniforms.time * 1.5) * 0.04;
+  // Multi-frequency wave displacement (4 octaves)
+  let t = uniforms.time;
+  let wave = sin(pos.x * 0.8 + t * 1.2) * 0.08
+           + sin(pos.z * 1.2 + t * 0.9) * 0.06
+           + sin((pos.x + pos.z) * 2.0 + t * 2.5) * 0.03
+           + sin((pos.x - pos.z) * 3.0 + t * 1.8) * 0.015;
   pos.y += wave;
 
   out.position = uniforms.viewProjection * vec4f(pos, 1.0);

@@ -104,9 +104,11 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
         const blockType = chunk.getBlock(x, y, z);
         if (blockType === BlockType.AIR) continue;
 
-        // Water blocks go to separate mesh
+        // Water blocks go to separate mesh (TOP face only = water surface)
         if (isBlockWater(blockType)) {
           for (let face = 0; face < 6; face++) {
+            // Only render TOP face as water surface (sides/bottom cause double-layer underwater)
+            if (face !== 0) continue;
             if (!shouldRenderWaterFace(chunk, neighbors, x, y, z, face)) continue;
 
             const fv = FACE_VERTICES[face];

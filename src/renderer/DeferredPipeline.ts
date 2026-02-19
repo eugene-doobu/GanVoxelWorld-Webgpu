@@ -31,7 +31,7 @@ const CAMERA_UNIFORM_SIZE = 112;
 
 // Water vertex uniform: viewProjection(64) + time(4) + pad(12) = 80 bytes
 const WATER_VERT_UNIFORM_SIZE = 80;
-// Water fragment uniform: cameraPos(12+pad4) + sunDir(12+pad4) + sunColor(12) + time(4) + fogStart(4) + fogEnd(4) + fogColor(12) + pad(4) = 80 bytes
+// Water fragment uniform: cameraPos(12)+time(4) + sunDir(12)+sunIntensity(4) + sunColor(12)+nearPlane(4) + fogColor(12)+farPlane(4) + fogStart(4)+fogEnd(4)+screenSize(8) = 80 bytes
 const WATER_FRAG_UNIFORM_SIZE = 80;
 
 // Weather uniform: viewProjection(64) + cameraPos(16) + params(16) = 96 bytes
@@ -116,6 +116,7 @@ export class DeferredPipeline {
 
   // Dirty flag for bind groups
   private bindGroupsDirty = true;
+  private waterBindGroupDirty = true;
 
   // Time accumulator for water animation
   private waterTime = 0;
@@ -355,19 +356,14 @@ export class DeferredPipeline {
   private createWaterPass(): void {
     const device = this.ctx.device;
 
-    // Single bind group: binding 0 = vertex uniforms, binding 1 = fragment uniforms
+    // Bind group: uniforms + scene color copy + depth + sampler (for refraction)
     this.waterBindGroupLayout = device.createBindGroupLayout({
       entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
-          buffer: { type: 'uniform' },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: 'uniform' },
-        },
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
       ],
     });
 
@@ -428,13 +424,7 @@ export class DeferredPipeline {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    this.waterBindGroup = device.createBindGroup({
-      layout: this.waterBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
-        { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
-      ],
-    });
+    // Bind group created lazily in ensureWaterBindGroup() (needs resizable textures)
   }
 
   private createWeatherPass(): void {
@@ -647,38 +637,38 @@ export class DeferredPipeline {
     wvF32[19] = 0;
     this.ctx.device.queue.writeBuffer(this.waterVertUniformBuffer, 0, wvF32);
 
-    // Water fragment uniform layout (must match WGSL struct exactly):
-    // [0-3]   cameraPos(vec3f) + _pad0(f32) = 16 bytes
-    // [4-7]   sunDirection(vec3f) + _pad1(f32) = 16 bytes
-    // [8-11]  sunColor(vec3f) + time(f32) = 16 bytes
-    // [12-15] fogStart(f32) + fogEnd(f32) + _pad2(f32) + _pad3(f32) = 16 bytes
-    // [16-19] fogColor(vec3f) + _pad4(f32) = 16 bytes
+    // Water fragment uniform layout (must match WGSL FragUniforms exactly):
+    // [0-3]   cameraPos(vec3f) + time(f32) = 16 bytes
+    // [4-7]   sunDirection(vec3f) + sunIntensity(f32) = 16 bytes
+    // [8-11]  sunColor(vec3f) + nearPlane(f32) = 16 bytes
+    // [12-15] fogColor(vec3f) + farPlane(f32) = 16 bytes
+    // [16-19] fogStart(f32) + fogEnd(f32) + screenSize(vec2f) = 16 bytes
     // Total: 80 bytes = 20 floats
     const wfF32 = this.waterFragF32;
     wfF32[0] = cameraPos[0];
     wfF32[1] = cameraPos[1];
     wfF32[2] = cameraPos[2];
-    wfF32[3] = 0; // _pad0
+    wfF32[3] = this.waterTime;
     wfF32[4] = dnc.sunDir[0];
     wfF32[5] = dnc.sunDir[1];
     wfF32[6] = dnc.sunDir[2];
-    wfF32[7] = 0; // _pad1
+    wfF32[7] = dnc.sunIntensity;
     wfF32[8] = dnc.sunColor[0];
     wfF32[9] = dnc.sunColor[1];
     wfF32[10] = dnc.sunColor[2];
-    wfF32[11] = this.waterTime;
-    wfF32[12] = fogStart;
-    wfF32[13] = fogEnd;
-    wfF32[14] = 0; // _pad2
-    wfF32[15] = 0; // _pad3
-    // Compute fog color from time of day (matches lighting.wgsl FOG_COLOR constants)
-    const sunHeight = dnc.sunDir[1];
-    const dayFactor = Math.max(0, Math.min(1, (sunHeight + 0.1) / 0.4));
-    // FOG_COLOR_DAY = (0.7, 0.8, 0.95), FOG_COLOR_NIGHT = (0.01, 0.01, 0.02)
-    wfF32[16] = 0.01 + 0.69 * dayFactor;
-    wfF32[17] = 0.01 + 0.79 * dayFactor;
-    wfF32[18] = 0.02 + 0.93 * dayFactor;
-    wfF32[19] = 0; // _pad4
+    wfF32[11] = 0.1;   // nearPlane (matches FlyCamera)
+    // Compute fog color from time of day (must match lighting.wgsl FOG_COLOR constants exactly)
+    const timeOfDay = dnc.timeOfDay;
+    const dayFactor = Math.max(0, Math.min(1, 1.0 - Math.abs(timeOfDay - 0.5) * 4.0));
+    // FOG_COLOR_DAY = (0.40, 0.50, 0.62), FOG_COLOR_NIGHT = (0.02, 0.02, 0.05)
+    wfF32[12] = 0.02 + 0.38 * dayFactor;
+    wfF32[13] = 0.02 + 0.48 * dayFactor;
+    wfF32[14] = 0.05 + 0.57 * dayFactor;
+    wfF32[15] = 1000.0; // farPlane (matches FlyCamera)
+    wfF32[16] = fogStart;
+    wfF32[17] = fogEnd;
+    wfF32[18] = this.ctx.canvas.width;
+    wfF32[19] = this.ctx.canvas.height;
     this.ctx.device.queue.writeBuffer(this.waterFragUniformBuffer, 0, wfF32);
 
     // Update weather uniforms
@@ -739,6 +729,7 @@ export class DeferredPipeline {
 
     // Rebuild read bind groups (needed after resize or first frame)
     this.ensureReadBindGroups();
+    this.ensureWaterBindGroup();
 
     // 4. Lighting Pass -> HDR texture
     this.renderLightingPass(encoder);
@@ -751,6 +742,12 @@ export class DeferredPipeline {
 
     // 7. Water Forward Pass -> HDR texture (alpha blended)
     if (waterDrawCalls && waterDrawCalls.length > 0) {
+      // Copy current HDR content so water shader can sample for refraction
+      encoder.copyTextureToTexture(
+        { texture: this.postProcess.hdrTexture },
+        { texture: this.postProcess.hdrCopyTexture },
+        [this.ctx.canvas.width, this.ctx.canvas.height],
+      );
       this.renderWaterPass(encoder, waterDrawCalls);
     }
 
@@ -867,6 +864,22 @@ export class DeferredPipeline {
     );
   }
 
+  private ensureWaterBindGroup(): void {
+    if (!this.waterBindGroupDirty) return;
+    this.waterBindGroupDirty = false;
+
+    this.waterBindGroup = this.ctx.device.createBindGroup({
+      layout: this.waterBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
+        { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
+        { binding: 2, resource: this.postProcess.hdrCopyTextureView },
+        { binding: 3, resource: this.gBuffer.depthView },
+        { binding: 4, resource: this.linearSampler },
+      ],
+    });
+  }
+
   private renderLightingPass(encoder: GPUCommandEncoder): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -952,6 +965,7 @@ export class DeferredPipeline {
     this.postProcess.resize();
     // Invalidate bind groups
     this.bindGroupsDirty = true;
+    this.waterBindGroupDirty = true;
     this.gbufferReadBindGroup = null;
     this.shadowReadBindGroup = null;
     this.skyBindGroup = null;
