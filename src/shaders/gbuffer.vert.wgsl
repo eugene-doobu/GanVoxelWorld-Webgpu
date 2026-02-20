@@ -20,7 +20,6 @@ struct VertexOutput {
   @location(1) texCoord: vec2<f32>,
   @location(2) @interpolate(flat) normalIndex: u32,
   @location(3) ao: f32,
-  @location(4) origPos: vec3<f32>,
 };
 
 @vertex
@@ -31,7 +30,6 @@ fn main(input: VertexInput) -> VertexOutput {
   let blockType = input.normalIndex >> 8u;
 
   var worldPos = input.position;
-  output.origPos = input.position; // save pre-wind position for stable hash
 
   // Leaves wind animation (BlockType.LEAVES = 51)
   if (blockType == 51u) {

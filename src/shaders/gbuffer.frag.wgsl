@@ -43,7 +43,6 @@ struct VertexOutput {
   @location(1) texCoord: vec2<f32>,
   @location(2) @interpolate(flat) normalIndex: u32,
   @location(3) ao: f32,
-  @location(4) origPos: vec3<f32>,
 };
 
 @fragment
@@ -54,26 +53,11 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
   let faceIdx = input.normalIndex & 0xFFu;
   let blockType = input.normalIndex >> 8u;
 
-  // textureSampleLevel(lod=0): no implicit derivatives needed,
-  // safe in non-uniform control flow. Our atlas uses nearest filtering
-  // with no mipmaps, so explicit LOD 0 is equivalent to textureSample().
-
-  // Leaves alpha cutout (BlockType.LEAVES = 51)
-  // worldPos-only hash: both sides of a shared leaf-leaf face see the same
-  // world position → same hash → same discard → no z-fighting.
-  // Multi-frequency sin() avoids floor() grid boundary artifacts.
-  if (blockType == 51u) {
-    let wp = input.origPos;
-    let h1 = fract(sin(dot(wp * 3.7, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
-    let h2 = fract(sin(dot(wp * 7.3, vec3f(269.5, 183.3, 246.1))) * 43758.5453);
-    let pattern = h1 * 0.6 + h2 * 0.4;
-    if (pattern < 0.35) { discard; }
-  }
-
-  // Vegetation cutout (TALL_GRASS=80, POPPY=81, DANDELION=82)
-  if (blockType >= 80u && blockType <= 82u) {
-    let vegAlpha = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0).a;
-    if (vegAlpha < 0.5) { discard; }
+  // Alpha cutout: leaves (51) and vegetation (80-82) use atlas texture alpha.
+  // Atlas alpha is baked at texture generation time → perfectly stable, no flickering.
+  if (blockType == 51u || (blockType >= 80u && blockType <= 82u)) {
+    let cutoutAlpha = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0).a;
+    if (cutoutAlpha < 0.5) { discard; }
   }
 
   let albedo = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0);
