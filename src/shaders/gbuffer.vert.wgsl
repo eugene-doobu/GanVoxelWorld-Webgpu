@@ -34,12 +34,12 @@ fn main(input: VertexInput) -> VertexOutput {
   // Leaves wind animation (BlockType.LEAVES = 51)
   if (blockType == 51u) {
     let windTime = camera.time.x;
-    let windStrength = 0.08;
-    let freq1 = worldPos.x * 1.5 + worldPos.z * 0.7 + windTime * 2.5;
-    let freq2 = worldPos.x * 0.8 + worldPos.z * 1.3 + windTime * 1.8;
+    let windStrength = 0.03;
+    let freq1 = worldPos.x * 0.8 + worldPos.z * 0.4 + windTime * 1.2;
+    let freq2 = worldPos.x * 0.5 + worldPos.z * 0.7 + windTime * 0.9;
     worldPos.x += sin(freq1) * windStrength;
     worldPos.z += cos(freq2) * windStrength * 0.7;
-    worldPos.y += sin(freq1 + freq2) * windStrength * 0.3;
+    worldPos.y += sin(freq1 + freq2) * windStrength * 0.2;
   }
 
   // Vegetation wind animation (TALL_GRASS=80, POPPY=81, DANDELION=82)

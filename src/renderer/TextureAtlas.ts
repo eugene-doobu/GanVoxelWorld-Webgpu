@@ -772,9 +772,9 @@ export class TextureAtlas {
             pixels[pixelIndex + 0] = r;
             pixels[pixelIndex + 1] = g;
             pixels[pixelIndex + 2] = b;
-            // ~35% holes using the same hash already used for the leaf pattern
+            // ~20% holes using the same hash already used for the leaf pattern
             const h2 = hash(x, y, 61);
-            pixels[pixelIndex + 3] = h2 < 0.35 ? 0 : 255;
+            pixels[pixelIndex + 3] = h2 < 0.20 ? 0 : 255;
           } else {
             const [r, g, b] = this.getBlockPattern(blockType, x, y, br, bg, bb);
             pixels[pixelIndex + 0] = r;
