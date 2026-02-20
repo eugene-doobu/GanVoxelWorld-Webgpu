@@ -118,6 +118,56 @@ fn sampleStarField(rayDir: vec3<f32>, elapsedTime: f32) -> vec3<f32> {
   return stars;
 }
 
+// === Night Nebula / Milky Way (3-layer FBM Simplex) ===
+fn sampleNebula(rayDir: vec3<f32>, time: f32) -> vec3<f32> {
+  if (rayDir.y < 0.05) { return vec3<f32>(0.0); }
+
+  // Galactic plane: tilted band across the sky (Milky Way-like)
+  let galacticNormal = normalize(vec3<f32>(0.35, 0.7, 0.55));
+  let galacticDist = abs(dot(rayDir, galacticNormal));
+  let bandMask = smoothstep(0.55, 0.15, galacticDist);
+  if (bandMask < 0.01) { return vec3<f32>(0.0); }
+
+  // Use ray direction as 3D noise coordinate (seamless on sphere)
+  let coord = rayDir * 3.0;
+  let t = time * 0.004;
+
+  // Layer 1: Deep blue-violet (dominant nebula mass)
+  let p1 = coord + vec3<f32>(0.0, 0.0, t);
+  var n1 = snoise3d(p1)         * 0.5
+         + snoise3d(p1 * 2.03)  * 0.25
+         + snoise3d(p1 * 4.01)  * 0.125
+         + snoise3d(p1 * 8.05)  * 0.0625;
+  n1 = smoothstep(0.38, 0.65, n1);
+
+  // Layer 2: Warm emission pockets (amber/orange)
+  let p2 = coord * 1.3 + vec3<f32>(43.0, 17.0, t * 0.7);
+  var n2 = snoise3d(p2)         * 0.5
+         + snoise3d(p2 * 1.97)  * 0.25
+         + snoise3d(p2 * 3.89)  * 0.125
+         + snoise3d(p2 * 7.83)  * 0.0625;
+  n2 = smoothstep(0.42, 0.7, n2);
+
+  // Layer 3: Bright blue-white core (star-forming regions, finer detail)
+  let p3 = coord * 0.8 + vec3<f32>(91.0, 53.0, t * 0.5);
+  var n3 = snoise3d(p3)         * 0.5
+         + snoise3d(p3 * 2.11)  * 0.25
+         + snoise3d(p3 * 4.27)  * 0.125
+         + snoise3d(p3 * 8.53)  * 0.0625
+         + snoise3d(p3 * 17.1)  * 0.03125;
+  n3 = smoothstep(0.4, 0.68, n3);
+
+  // Color composition
+  let col1 = vec3<f32>(0.06, 0.03, 0.14) * n1;  // blue-violet
+  let col2 = vec3<f32>(0.10, 0.05, 0.02) * n2;  // warm amber
+  let col3 = vec3<f32>(0.05, 0.06, 0.10) * n3;  // blue-white
+
+  // Horizon atmospheric extinction
+  let horizFade = smoothstep(0.05, 0.25, rayDir.y);
+
+  return (col1 + col2 + col3) * bandMask * horizFade;
+}
+
 // Night sky gradient (zenith to horizon)
 fn nightSkyGradient(up: f32) -> vec3<f32> {
   let zenith = vec3<f32>(0.003, 0.005, 0.018);
@@ -248,69 +298,72 @@ fn snoise3d(v: vec3<f32>) -> f32 {
   return 42.0 * dot(m * m, vec4<f32>(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3))) * 0.5 + 0.5;
 }
 
-// === Aurora Borealis (BSL/AstraLex curtain style) ===
-// Ray-march through horizontal planes → same 2D noise at each height
-// → vertical extrusion creates hanging curtain effect (nimitz technique)
+// === Aurora Borealis (curtain style) ===
+// Physical model: aurora is a thin vertical SHEET hanging in the sky.
+// Bright where you look along the sheet edge-on (fold lines),
+// dim where you look through it face-on.
+// Ray-march vertical extrusion → fold lines become hanging curtain drapes.
 
 fn sampleAurora(rayDir: vec3<f32>, cameraPos: vec3<f32>, time: f32) -> vec4<f32> {
   let up = rayDir.y;
   if (up < 0.1) { return vec4<f32>(0.0); }
 
+  // Elevation mask — visible between ~10° and ~55°
+  let elevMask = smoothstep(0.1, 0.25, up) * smoothstep(0.85, 0.5, up);
+  if (elevMask < 0.01) { return vec4<f32>(0.0); }
+
   let t = time * AURORA_SPEED;
+  var col = vec3<f32>(0.0);
+  var totalAlpha = 0.0;
 
-  var col = vec4<f32>(0.0);
-  var avgCol = vec4<f32>(0.0);
-
-  // BSL/AstraLex palette: green-cyan (bottom) → purple-magenta (top)
-  let lowerColor = vec3<f32>(0.2, 1.5, 0.5);
-  let upperColor = vec3<f32>(0.6, 0.2, 0.8);
-
-  for (var i = 0u; i < 20u; i++) {
+  for (var i = 0u; i < 16u; i++) {
     let fi = f32(i);
-    let amp = fi / 19.0;
+    let layerT = fi / 15.0;
 
-    // Ray-plane intersection at increasing heights (nimitz technique)
-    let pt = (0.8 + pow(fi, 1.4) * 0.004) / (up * 2.0 + 0.4);
+    // Ray-plane intersection — each step = a horizontal slice of the curtain
+    let height = 0.8 + fi * 0.04;
+    let pt = height / (up * 2.0 + 0.4);
 
-    // XZ projection → same noise pattern at every height = vertical extrusion
-    // .zx matches nimitz convention for curtain alignment
-    let aurPos = vec2<f32>(rayDir.z, rayDir.x) * pt;
-    let coord = aurPos * 3.0 + cameraPos.xz * 0.0001;
+    // Project ray onto horizontal plane → planeUV.x = depth, planeUV.y = lateral
+    let planeUV = vec2<f32>(rayDir.z, rayDir.x) * pt + cameraPos.xz * 0.00005;
 
-    // Domain warp — organic curtain sway
-    let warp = snoise3d(vec3<f32>(coord.x * 0.5, coord.y * 0.5, t * 0.5));
-    let wCoord = coord + vec2<f32>((warp - 0.5) * 0.8, 0.0);
+    // === Curtain structure: 1D fold pattern along Y, draped by X ===
 
-    // 2-octave Simplex FBM
-    let n1 = snoise3d(vec3<f32>(wCoord.x, wCoord.y, t * 0.7));
-    let n2 = snoise3d(vec3<f32>(wCoord.x * 2.5 + 77.7, wCoord.y * 2.5, t * 1.3));
-    var noise = n1 * 0.65 + n2 * 0.35;
+    // Drape warp: the fold position shifts along X (depth) → draped hanging shape
+    let drape = snoise3d(vec3<f32>(planeUV.x * 0.12, planeUV.y * 0.06, t * 0.2));
+    // Large-scale sway: entire curtain swings gently over time
+    let sway = snoise3d(vec3<f32>(planeUV.y * 0.04 + 20.0, 0.0, t * 0.15));
+    let warpedY = planeUV.y + (drape - 0.5) * 4.0 + (sway - 0.5) * 5.0;
 
-    // Iso-line technique (Complementary style): thin bright bands where noise ≈ 0.5
-    // Threshold varies with elevation — wider bands near horizon, thinner at zenith
-    let threshold = 1.8 / (1.0 - up * 0.5);
-    noise = max(1.0 - threshold * abs(noise - 0.5), 0.0);
-    noise = noise * noise * noise;
+    // Fold noise: primarily 1D along lateral axis (Y)
+    // Very weak X dependency → folds are tall, continuous vertical lines
+    let n1 = snoise3d(vec3<f32>(planeUV.x * 0.02, warpedY * 0.5, t * 0.5 + fi * 0.06));
+    let n2 = snoise3d(vec3<f32>(planeUV.x * 0.04 + 50.0, warpedY * 1.1, t * 0.8));
+    var val = n1 * 0.6 + n2 * 0.4;
 
-    if (noise < 0.01) { continue; }
+    // Fold ridges: bright where noise ≈ 0.5 → visible curtain fold lines
+    val = max(1.0 - 1.5 * abs(val - 0.5), 0.0);
+    val *= val;
 
-    // Per-layer color: green at bottom → purple at top
-    var innerColor = vec4<f32>(
-      noise * mix(lowerColor, upperColor, smoothstep(0.0, 1.0, amp)),
-      noise
-    );
+    if (val < 0.005) { continue; }
 
-    // Running average for smooth inter-layer blending
-    avgCol = mix(avgCol, innerColor, 0.5);
+    // Color: bright green-cyan at bottom → purple-magenta at top
+    let green  = vec3<f32>(0.15, 1.3, 0.4);
+    let purple = vec3<f32>(0.45, 0.12, 0.55);
+    let layerColor = mix(green, purple, smoothstep(0.1, 0.9, layerT));
 
-    // Accumulate: exponential falloff (bright top, dim bottom) + fade-in first layers
-    col += avgCol * exp2(-fi * 0.065 - 2.5) * smoothstep(0.0, 5.0, fi);
+    // Accumulate — brighter layers near top, fade-in at start
+    let weight = exp2(-fi * 0.1 - 1.8) * smoothstep(0.0, 3.0, fi);
+    col += layerColor * val * weight;
+    totalAlpha += val * weight;
   }
 
-  // Horizon fade
-  col *= clamp(up * 15.0 + 0.4, 0.0, 1.0);
+  // Bottom edge brighter (curtain hem glow)
+  let bottomGlow = smoothstep(0.4, 0.15, up) * 0.4 + 1.0;
+  col *= elevMask * bottomGlow;
+  totalAlpha = clamp(totalAlpha * 3.0, 0.0, 1.0) * elevMask;
 
-  return col;
+  return vec4<f32>(col, totalAlpha);
 }
 
 // === Volumetric cloud functions ===
@@ -555,6 +608,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let horizAtmo = exp(-abs(up) * 6.0);
     skyColor += vec3<f32>(0.008, 0.010, 0.020) * horizAtmo * nightFactor;
 
+    // Night nebula / Milky Way band
+    if (up > 0.05) {
+      var nebulaColor = sampleNebula(rayDir, starTime);
+      // Moonlight washes out faint nebula
+      nebulaColor *= 1.0 - 0.3 * moonBright;
+      skyColor += nebulaColor * nightFactor;
+    }
+
     // Multi-layer star field
     if (up > 0.0) {
       var starFieldColor = sampleStarField(rayDir, starTime);
@@ -568,15 +629,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // === Aurora Borealis ===
     if (up > 0.1) {
-      var aurora = sampleAurora(rayDir, scene.cameraPos.xyz, starTime);
-      aurora = smoothstep(vec4<f32>(0.0), vec4<f32>(1.5), aurora);
+      let aurora = sampleAurora(rayDir, scene.cameraPos.xyz, starTime);
       if (aurora.a > 0.001) {
-        // Dim aurora under bright moonlight (20% reduction at full moon)
         let auroraIntensity = nightFactor * (1.0 - 0.2 * moonBright);
         let auroraColor = aurora.rgb * auroraIntensity;
-        // Semi-transparent blend: 60% star occlusion + 40% additive glow
-        skyColor = mix(skyColor, auroraColor, aurora.a * 0.6);
-        skyColor += auroraColor * 0.4;
+        // Soft additive blend — aurora glows over stars without harsh replacement
+        skyColor += auroraColor * aurora.a;
       }
     }
 

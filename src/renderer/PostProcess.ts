@@ -8,12 +8,20 @@ import bloomUpsampleShader from '../shaders/bloom_upsample.wgsl?raw';
 import tonemapShader from '../shaders/tonemap.wgsl?raw';
 import volumetricShader from '../shaders/volumetric.wgsl?raw';
 import ssrShader from '../shaders/ssr.wgsl?raw';
+import motionBlurShader from '../shaders/motionblur.wgsl?raw';
+import dofShader from '../shaders/dof.wgsl?raw';
 import lumExtractShader from '../shaders/lum_extract.wgsl?raw';
 import lumDownsampleShader from '../shaders/lum_downsample.wgsl?raw';
 import lumAdaptShader from '../shaders/lum_adapt.wgsl?raw';
 
 // AdaptParams: adaptSpeed(4) + keyValue(4) + minExposure(4) + maxExposure(4) + dt(4) + pad(12) = 32 bytes
 const ADAPT_PARAMS_SIZE = 32;
+
+// MotionBlurParams: strength(4) + samples(4) + pad(8) = 16 bytes
+const MOTION_BLUR_PARAMS_SIZE = 16;
+
+// DoFParams: focusDistance(4) + aperture(4) + maxBlur(4) + nearPlane(4) + farPlane(4) + pad(12) = 32 bytes
+const DOF_PARAMS_SIZE = 32;
 
 // VolumetricUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + params(16) = 128 bytes
 const VOLUMETRIC_UNIFORM_SIZE = 128;
@@ -82,6 +90,20 @@ export class PostProcess {
   private ssrMaterialView: GPUTextureView | null = null;
   private ssrDepthView: GPUTextureView | null = null;
 
+  // Motion Blur
+  private motionBlurPipeline!: GPURenderPipeline;
+  private motionBlurBGL!: GPUBindGroupLayout;
+  private motionBlurParamsBuffer!: GPUBuffer;
+  private motionBlurBindGroup: GPUBindGroup | null = null;
+  private motionBlurVelocityView: GPUTextureView | null = null;
+
+  // Depth of Field
+  private dofPipeline!: GPURenderPipeline;
+  private dofBGL!: GPUBindGroupLayout;
+  private dofParamsBuffer!: GPUBuffer;
+  private dofBindGroup: GPUBindGroup | null = null;
+  private dofDepthView: GPUTextureView | null = null;
+
   // Auto Exposure
   private lumExtractPipeline!: GPURenderPipeline;
   private lumDownsamplePipeline!: GPURenderPipeline;
@@ -105,6 +127,8 @@ export class PostProcess {
     this.createSampler();
     this.createUniformBuffers();
     this.createPipelines();
+    this.createMotionBlurPipeline();
+    this.createDoFPipeline();
     this.createAutoExposurePipelines();
     this.createTextures();
   }
@@ -140,13 +164,13 @@ export class PostProcess {
       1.0, 0, 0, 0,
     ]));
 
-    // TonemapParams: bloomIntensity(4) + exposure(4) + pad(8) = 16 bytes
+    // TonemapParams: bloomIntensity(4) + exposure(4) + timeOfDay(4) + autoExposure(4) + underwaterDepth(4) + pad(12) = 32 bytes
     this.tonemapParamsBuffer = device.createBuffer({
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this.tonemapParamsBuffer, 0, new Float32Array([
-      bloom.intensity, 0.7, 0, 0,
+      bloom.intensity, 0.7, 0, 0, 0, 0, 0, 0,
     ]));
 
     // Volumetric uniforms
@@ -160,6 +184,33 @@ export class PostProcess {
       size: SSR_UNIFORM_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // Motion Blur params
+    this.motionBlurParamsBuffer = device.createBuffer({
+      size: MOTION_BLUR_PARAMS_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const mb = Config.data.rendering.motionBlur;
+    device.queue.writeBuffer(this.motionBlurParamsBuffer, 0, new Float32Array([
+      mb.strength,
+      8.0,  // samples
+      0, 0, // pad
+    ]));
+
+    // DoF params
+    this.dofParamsBuffer = device.createBuffer({
+      size: DOF_PARAMS_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const dof = Config.data.rendering.dof;
+    device.queue.writeBuffer(this.dofParamsBuffer, 0, new Float32Array([
+      dof.focusDistance,
+      dof.aperture,
+      dof.maxBlur,
+      0.1,    // nearPlane
+      1000.0, // farPlane
+      0, 0, 0, // pad
+    ]));
 
     // Adapt params
     this.adaptParamsBuffer = device.createBuffer({
@@ -318,6 +369,58 @@ export class PostProcess {
             alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
           },
         }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+  }
+
+  private createMotionBlurPipeline(): void {
+    const device = this.ctx.device;
+
+    // hdrCopy(texture) + velocity(texture) + sampler + params(uniform)
+    this.motionBlurBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    const module = device.createShaderModule({ code: motionBlurShader });
+    this.motionBlurPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.motionBlurBGL] }),
+      vertex: { module, entryPoint: 'vs_main' },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [{ format: HDR_FORMAT }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+  }
+
+  private createDoFPipeline(): void {
+    const device = this.ctx.device;
+
+    // hdrCopy(texture) + depth(depth texture) + sampler + params(uniform)
+    this.dofBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    const module = device.createShaderModule({ code: dofShader });
+    this.dofPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.dofBGL] }),
+      vertex: { module, entryPoint: 'vs_main' },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [{ format: HDR_FORMAT }],
       },
       primitive: { topology: 'triangle-list' },
     });
@@ -742,6 +845,10 @@ export class PostProcess {
     this.ctx.device.queue.writeBuffer(this.tonemapParamsBuffer, 8, new Float32Array([timeOfDay]));
   }
 
+  updateUnderwaterDepth(depth: number): void {
+    this.ctx.device.queue.writeBuffer(this.tonemapParamsBuffer, 16, new Float32Array([depth]));
+  }
+
   updateBloomParams(): void {
     const bloom = Config.data.rendering.bloom;
     const ae = Config.data.rendering.autoExposure;
@@ -751,6 +858,102 @@ export class PostProcess {
     this.ctx.device.queue.writeBuffer(this.tonemapParamsBuffer, 0, new Float32Array([
       bloom.intensity, 0.7, 0, ae.enabled ? 1.0 : 0.0,
     ]));
+
+    // Update motion blur params from Config
+    const mb = Config.data.rendering.motionBlur;
+    this.ctx.device.queue.writeBuffer(this.motionBlurParamsBuffer, 0, new Float32Array([
+      mb.strength, 8.0, 0, 0,
+    ]));
+
+    // Update DoF params from Config
+    const dof = Config.data.rendering.dof;
+    this.ctx.device.queue.writeBuffer(this.dofParamsBuffer, 0, new Float32Array([
+      dof.focusDistance, dof.aperture, dof.maxBlur, 0.1, 1000.0, 0, 0, 0,
+    ]));
+  }
+
+  renderMotionBlur(encoder: GPUCommandEncoder, velocityView: GPUTextureView): void {
+    // Rebuild bind group if velocity view changed (resize)
+    if (this.motionBlurVelocityView !== velocityView) {
+      this.motionBlurVelocityView = velocityView;
+      this.motionBlurBindGroup = null;
+    }
+
+    // Copy HDR → hdrCopy so we can sample copy while writing to HDR
+    const w = this.ctx.canvas.width;
+    const h = this.ctx.canvas.height;
+    encoder.copyTextureToTexture(
+      { texture: this.hdrTexture },
+      { texture: this.hdrCopyTexture },
+      [w, h],
+    );
+
+    // Rebuild bind group if needed
+    if (!this.motionBlurBindGroup) {
+      this.motionBlurBindGroup = this.ctx.device.createBindGroup({
+        layout: this.motionBlurBGL,
+        entries: [
+          { binding: 0, resource: this.hdrCopyTextureView },
+          { binding: 1, resource: velocityView },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.motionBlurParamsBuffer } },
+        ],
+      });
+    }
+
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.hdrTextureView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+    pass.setPipeline(this.motionBlurPipeline);
+    pass.setBindGroup(0, this.motionBlurBindGroup);
+    pass.draw(3);
+    pass.end();
+  }
+
+  renderDoF(encoder: GPUCommandEncoder, depthView: GPUTextureView): void {
+    // Rebuild bind group if depth view changed (resize)
+    if (this.dofDepthView !== depthView) {
+      this.dofDepthView = depthView;
+      this.dofBindGroup = null;
+    }
+
+    // Copy HDR → hdrCopy so we can sample copy while writing to HDR
+    const w = this.ctx.canvas.width;
+    const h = this.ctx.canvas.height;
+    encoder.copyTextureToTexture(
+      { texture: this.hdrTexture },
+      { texture: this.hdrCopyTexture },
+      [w, h],
+    );
+
+    // Rebuild bind group if needed
+    if (!this.dofBindGroup) {
+      this.dofBindGroup = this.ctx.device.createBindGroup({
+        layout: this.dofBGL,
+        entries: [
+          { binding: 0, resource: this.hdrCopyTextureView },
+          { binding: 1, resource: depthView },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.dofParamsBuffer } },
+        ],
+      });
+    }
+
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.hdrTextureView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+    pass.setPipeline(this.dofPipeline);
+    pass.setBindGroup(0, this.dofBindGroup);
+    pass.draw(3);
+    pass.end();
   }
 
   renderAutoExposure(encoder: GPUCommandEncoder, dt: number): void {
@@ -896,5 +1099,10 @@ export class PostProcess {
   resize(): void {
     this.createTextures();
     this.rebuildSSRBindGroup();
+    // Invalidate motion blur / DoF bind groups (texture views changed)
+    this.motionBlurBindGroup = null;
+    this.motionBlurVelocityView = null;
+    this.dofBindGroup = null;
+    this.dofDepthView = null;
   }
 }

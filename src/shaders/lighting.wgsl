@@ -163,21 +163,54 @@ fn sampleShadow(worldPos: vec3<f32>, viewDist: f32) -> f32 {
     return 1.0;
   }
 
-  // PCF 3x3
+  // PCSS (Percentage Closer Soft Shadows)
   let texelSize = 1.0 / 2048.0;
-  var shadowFactor = 0.0;
-  for (var ox = -1i; ox <= 1i; ox++) {
-    for (var oy = -1i; oy <= 1i; oy++) {
-      let offset = vec2<f32>(f32(ox), f32(oy)) * texelSize;
-      shadowFactor += textureSampleCompareLevel(
-        shadowMap, shadowSampler,
-        shadowUV + offset,
-        i32(cascadeIdx),
-        currentDepth - 0.002
-      );
+  // TODO: connect lightSize to Config.data.rendering.shadows.pcss.lightSize
+  let lightSize = 3.0; // light source size in texels
+  let bias = 0.002;
+
+  // Poisson disk samples (16 points)
+  let poissonDisk = array<vec2f, 16>(
+    vec2f(-0.94201624, -0.39906216), vec2f(0.94558609, -0.76890725),
+    vec2f(-0.09418410, -0.92938870), vec2f(0.34495938, 0.29387760),
+    vec2f(-0.91588581, 0.45771432), vec2f(-0.81544232, -0.87912464),
+    vec2f(-0.38277543, 0.27676845), vec2f(0.97484398, 0.75648379),
+    vec2f(0.44323325, -0.97511554), vec2f(0.53742981, -0.47373420),
+    vec2f(-0.26496911, -0.41893023), vec2f(0.79197514, 0.19090188),
+    vec2f(-0.24188840, 0.99706507), vec2f(-0.81409955, 0.91437590),
+    vec2f(0.19984126, 0.78641367), vec2f(0.14383161, -0.14100790)
+  );
+
+  // Step 1: Blocker search — estimate average blocker ratio
+  let searchRadius = lightSize * texelSize;
+  var blockerCount = 0.0;
+  for (var i = 0; i < 16; i++) {
+    let sampleUV = shadowUV + poissonDisk[i] * searchRadius;
+    let lit = textureSampleCompareLevel(
+      shadowMap, shadowSampler, sampleUV, i32(cascadeIdx), currentDepth - bias
+    );
+    if (lit < 0.5) {
+      blockerCount += 1.0;
     }
   }
-  return shadowFactor / 9.0;
+
+  // No blockers — fully lit
+  if (blockerCount < 0.5) { return 1.0; }
+
+  // Step 2: Penumbra estimation — more blockers = wider penumbra
+  let blockerRatio = blockerCount / 16.0;
+  let penumbraWidth = lightSize * blockerRatio;
+
+  // Step 3: Variable-size PCF filtering with Poisson disk
+  let filterRadius = max(penumbraWidth * texelSize, texelSize);
+  var shadowFactor = 0.0;
+  for (var i = 0; i < 16; i++) {
+    let sampleUV = shadowUV + poissonDisk[i] * filterRadius;
+    shadowFactor += textureSampleCompareLevel(
+      shadowMap, shadowSampler, sampleUV, i32(cascadeIdx), currentDepth - bias
+    );
+  }
+  return shadowFactor / 16.0;
 }
 
 // ====================== Contact Shadow ======================
@@ -229,25 +262,52 @@ fn contactShadow(worldPos: vec3f, sunDir: vec3f) -> f32 {
 }
 
 // ====================== Water Caustics ======================
-fn waterCaustics(worldPos: vec3f, time: f32) -> f32 {
-  let p = worldPos.xz;
+fn waterCaustics(worldPos: vec3f, time: f32, underwaterDepth: f32) -> f32 {
+  // Eclipse-style: project underwater position to water surface along sun direction
+  let sunDir = normalize(scene.sunDir.xyz);
+  let waterLevel = scene.cameraPos.w;
+  let projectedPos = worldPos.xz + sunDir.xz / max(abs(sunDir.y), 0.01) * underwaterDepth;
+
+  // Domain warping for organic patterns
+  let rawP = projectedPos;
+  let warpedP = rawP + vec2f(
+    sin(rawP.y * 0.3 + time * 0.2),
+    cos(rawP.x * 0.3 + time * 0.15)
+  ) * 0.5;
+
+  // Depth-dependent frequency: shallow = sharper/finer, deep = softer/larger
+  let freqScale = mix(1.5, 0.5, smoothstep(0.0, 5.0, underwaterDepth));
+  let p = warpedP * freqScale;
 
   // Octave 1: large slow waves
   var wave1 = 0.0;
   wave1 += sin(dot(p, vec2f(0.8, 0.6)) * 0.4 + time * 0.6);
   wave1 += sin(dot(p, vec2f(-0.5, 0.9)) * 0.5 + time * 0.45);
   wave1 += sin(dot(p, vec2f(0.9, -0.4)) * 0.35 + time * 0.55);
-  let c1 = 1.0 - abs(sin(wave1 * 1.2));
+  let c1 = pow(1.0 - abs(sin(wave1 * 1.2)), 2.0);
 
-  // Octave 2: small fast detail
+  // Octave 2: medium fast detail
   var wave2 = 0.0;
   wave2 += sin(dot(p, vec2f(1.2, -0.8)) * 0.9 + time * 1.1);
   wave2 += sin(dot(p, vec2f(-0.7, 1.3)) * 1.1 + time * 0.9);
   wave2 += sin(dot(p, vec2f(0.6, 1.1)) * 0.8 + time * 1.3);
-  let c2 = 1.0 - abs(sin(wave2 * 1.5));
+  let c2 = pow(1.0 - abs(sin(wave2 * 1.5)), 2.0);
 
-  // Combine: intersection of caustic lines creates bright spots
-  return c1 * c2;
+  // Octave 3: fine high-frequency detail
+  var wave3 = 0.0;
+  wave3 += sin(dot(p, vec2f(1.8, -1.2)) * 1.6 + time * 1.8);
+  wave3 += sin(dot(p, vec2f(-1.1, 1.7)) * 1.9 + time * 1.5);
+  wave3 += sin(dot(p, vec2f(1.4, 1.5)) * 1.4 + time * 2.0);
+  let c3 = pow(1.0 - abs(sin(wave3 * 1.8)), 2.0);
+
+  // Weighted combination with minimum brightness floor
+  let combined = c1 * 0.5 + c2 * 0.35 + c3 * 0.15;
+
+  // Temporal shimmer
+  let shimmer = 0.9 + 0.1 * sin(time * 3.0 + rawP.x * 0.5);
+
+  // Minimum brightness floor so dark areas aren't completely black
+  return max(combined * shimmer, 0.05);
 }
 
 // ====================== Fragment Shader ======================
@@ -361,19 +421,37 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let shoreFade = smoothstep(0.0, 0.5, underwaterDepth);
     let depthAtten = exp(-underwaterDepth * 0.15) * shoreFade;
     let normalUp = max(dot(N, vec3f(0.0, 1.0, 0.0)), 0.0);
-    let causticPattern = waterCaustics(worldPos, waterTime);
-    let causticLight = sunColor * causticPattern * depthAtten * normalUp * shadowFactor * 0.35;
+    let causticPattern = waterCaustics(worldPos, waterTime, underwaterDepth);
+    // Sun angle influence: stronger when sun is high, weaker at sunset/night
+    let sunHeightFactor = smoothstep(-0.1, 0.5, L.y);
+    let causticLight = sunColor * causticPattern * depthAtten * normalUp * shadowFactor * sunHeightFactor * 0.35;
     finalColor += causticLight;
   }
 
-  // Atmospheric scattering fog
-  let fogStart = scene.fogParams.x;
-  let fogEnd = scene.fogParams.y;
-  let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-  let viewDir = worldPos - scene.cameraPos.xyz;
-  let sunDir3 = normalize(scene.sunDir.xyz);
-  let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
-  finalColor = mix(finalColor, fogColor, fogFactor);
+  // Fog: underwater Beer-Lambert or atmospheric scattering
+  let isUnderwaterCamera = scene.cameraPos.y < scene.cameraPos.w;
+
+  if (isUnderwaterCamera) {
+    // Underwater Beer-Lambert absorption + scattering fog
+    let uwAbsorb = vec3f(0.39, 0.11, 0.07);
+    let uwTransmittance = exp(-uwAbsorb * min(viewDist, 60.0));
+    let uwDayFactor = smoothstep(-0.1, 0.3, normalize(scene.sunDir.xyz).y);
+    let uwScatterColor = vec3f(0.0, 0.03, 0.07) * uwDayFactor;
+    finalColor = finalColor * uwTransmittance + uwScatterColor * (1.0 - uwTransmittance.b);
+
+    // Depth darkening: deeper camera = darker overall
+    let camDepthBelow = scene.cameraPos.w - scene.cameraPos.y;
+    finalColor *= exp(-camDepthBelow * 0.06);
+  } else {
+    // Atmospheric scattering fog (normal above-water)
+    let fogStart = scene.fogParams.x;
+    let fogEnd = scene.fogParams.y;
+    let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
+    let viewDir = worldPos - scene.cameraPos.xyz;
+    let sunDir3 = normalize(scene.sunDir.xyz);
+    let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
+    finalColor = mix(finalColor, fogColor, fogFactor);
+  }
 
   return vec4<f32>(finalColor, 1.0);
 }

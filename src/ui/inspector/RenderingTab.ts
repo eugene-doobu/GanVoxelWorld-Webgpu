@@ -50,5 +50,29 @@ export function buildRenderingTab(): InspectorTab {
   autoExposure.addField({ type: 'slider', label: 'Min Exposure', configPath: 'rendering.autoExposure.minExposure', min: 0.01, max: 1.0, step: 0.01 });
   autoExposure.addField({ type: 'slider', label: 'Max Exposure', configPath: 'rendering.autoExposure.maxExposure', min: 1.0, max: 10.0, step: 0.1 });
 
+  // PCSS Shadows
+  const pcss = tab.addSection('PCSS Shadows');
+  pcss.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.pcss.enabled' });
+  pcss.addField({ type: 'slider', label: 'Light Size', configPath: 'rendering.pcss.lightSize', min: 0.5, max: 10, step: 0.5 });
+
+  // Post Process
+  const postProcess = tab.addSection('Post Process');
+  postProcess.addField({ type: 'toggle', label: 'Vignette', configPath: 'rendering.postProcess.vignette.enabled' });
+  postProcess.addField({ type: 'slider', label: 'Vignette Intensity', configPath: 'rendering.postProcess.vignette.intensity', min: 0, max: 1, step: 0.05 });
+  postProcess.addField({ type: 'toggle', label: 'Chromatic Aberration', configPath: 'rendering.postProcess.chromaticAberration.enabled' });
+  postProcess.addField({ type: 'slider', label: 'CA Intensity', configPath: 'rendering.postProcess.chromaticAberration.intensity', min: 0, max: 0.01, step: 0.001 });
+
+  // Motion Blur
+  const motionBlur = tab.addSection('Motion Blur');
+  motionBlur.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.motionBlur.enabled' });
+  motionBlur.addField({ type: 'slider', label: 'Strength', configPath: 'rendering.motionBlur.strength', min: 0.1, max: 2.0, step: 0.1 });
+
+  // Depth of Field
+  const dof = tab.addSection('Depth of Field');
+  dof.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.dof.enabled' });
+  dof.addField({ type: 'slider', label: 'Focus Distance', configPath: 'rendering.dof.focusDistance', min: 1, max: 200, step: 1 });
+  dof.addField({ type: 'slider', label: 'Aperture', configPath: 'rendering.dof.aperture', min: 0.01, max: 0.5, step: 0.01 });
+  dof.addField({ type: 'slider', label: 'Max Blur', configPath: 'rendering.dof.maxBlur', min: 1, max: 30, step: 1 });
+
   return tab;
 }

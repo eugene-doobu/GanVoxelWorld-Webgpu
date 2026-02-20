@@ -110,6 +110,38 @@ export interface RenderingAutoExposureConfig {
   maxExposure: number;
 }
 
+export interface RenderingVignetteConfig {
+  enabled: boolean;
+  intensity: number;
+}
+
+export interface RenderingChromaticAberrationConfig {
+  enabled: boolean;
+  intensity: number;
+}
+
+export interface RenderingPostProcessConfig {
+  vignette: RenderingVignetteConfig;
+  chromaticAberration: RenderingChromaticAberrationConfig;
+}
+
+export interface RenderingMotionBlurConfig {
+  enabled: boolean;
+  strength: number;
+}
+
+export interface RenderingDoFConfig {
+  enabled: boolean;
+  focusDistance: number;
+  aperture: number;
+  maxBlur: number;
+}
+
+export interface RenderingPCSSConfig {
+  enabled: boolean;
+  lightSize: number;
+}
+
 export interface RenderingConfig {
   general: RenderingGeneralConfig;
   shadows: RenderingShadowsConfig;
@@ -119,6 +151,10 @@ export interface RenderingConfig {
   contactShadows: RenderingContactShadowsConfig;
   taa: RenderingTAAConfig;
   autoExposure: RenderingAutoExposureConfig;
+  postProcess: RenderingPostProcessConfig;
+  motionBlur: RenderingMotionBlurConfig;
+  dof: RenderingDoFConfig;
+  pcss: RenderingPCSSConfig;
 }
 
 export interface CameraConfig {
@@ -232,6 +268,13 @@ class ConfigManager {
         contactShadows: { enabled: false, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
         taa: { enabled: true, blendFactor: 0.9 },
         autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.18, minExposure: 0.1, maxExposure: 5.0 },
+        postProcess: {
+          vignette: { enabled: true, intensity: 0.4 },
+          chromaticAberration: { enabled: true, intensity: 0.002 },
+        },
+        motionBlur: { enabled: false, strength: 0.5 },
+        dof: { enabled: false, focusDistance: 50.0, aperture: 0.05, maxBlur: 10.0 },
+        pcss: { enabled: true, lightSize: 3.0 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,

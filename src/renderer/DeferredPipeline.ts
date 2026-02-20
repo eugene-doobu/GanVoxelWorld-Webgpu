@@ -33,8 +33,8 @@ const CAMERA_UNIFORM_SIZE = 112;
 
 // Water vertex uniform: viewProjection(64) + time(4) + pad(12) = 80 bytes
 const WATER_VERT_UNIFORM_SIZE = 80;
-// Water fragment uniform: cameraPos(12)+time(4) + sunDir(12)+sunIntensity(4) + sunColor(12)+nearPlane(4) + fogColor(12)+farPlane(4) + fogStart(4)+fogEnd(4)+screenSize(8) = 80 bytes
-const WATER_FRAG_UNIFORM_SIZE = 80;
+// Water fragment uniform: cameraPos(12)+time(4) + sunDir(12)+sunIntensity(4) + sunColor(12)+nearPlane(4) + fogColor(12)+farPlane(4) + fogStart(4)+fogEnd(4)+screenSize(8) + waterLevel(4)+pad(12) = 96 bytes
+const WATER_FRAG_UNIFORM_SIZE = 96;
 
 // Weather uniform: viewProjection(64) + cameraPos(16) + params(16) = 96 bytes
 const WEATHER_UNIFORM_SIZE = 96;
@@ -128,6 +128,9 @@ export class DeferredPipeline {
 
   // Delta time cached for auto exposure
   private cachedDt = 0;
+
+  // Underwater depth (0 = above water, >0 = depth below surface)
+  private underwaterDepth = 0;
 
   // Frame counter for temporal dithering
   private frameIndex = 0;
@@ -719,6 +722,10 @@ export class DeferredPipeline {
       cameraPos,
     );
 
+    // Compute underwater depth for post-processing
+    const waterLevel = Config.data.terrain.height.seaLevel;
+    this.underwaterDepth = Math.max(waterLevel - (cameraPos[1] as number), 0);
+
     // Update water uniforms
     this.waterTime += dt;
 
@@ -762,6 +769,10 @@ export class DeferredPipeline {
     wfF32[17] = fogEnd;
     wfF32[18] = this.ctx.canvas.width;
     wfF32[19] = this.ctx.canvas.height;
+    wfF32[20] = Config.data.terrain.height.seaLevel; // waterLevel
+    wfF32[21] = 0; // pad
+    wfF32[22] = 0; // pad
+    wfF32[23] = 0; // pad
     this.ctx.device.queue.writeBuffer(this.waterFragUniformBuffer, 0, wfF32);
 
     // Update weather uniforms (jittered viewProj for forward pass)
@@ -867,12 +878,23 @@ export class DeferredPipeline {
       this.taa.storePrevViewProj(this.unjitteredViewProj);
     }
 
+    // 9.5 Motion Blur (requires TAA velocity buffer)
+    if (Config.data.rendering.motionBlur.enabled && Config.data.rendering.taa.enabled) {
+      this.postProcess.renderMotionBlur(encoder, this.taa.velocityView);
+    }
+
+    // 9.6 Depth of Field
+    if (Config.data.rendering.dof.enabled) {
+      this.postProcess.renderDoF(encoder, this.gBuffer.depthView);
+    }
+
     // 10. Auto Exposure (luminance extraction + adaptation)
     this.postProcess.renderAutoExposure(encoder, this.cachedDt);
 
     // 11+12. Bloom + Tone Mapping -> swapchain
     const swapChainView = ctx.context.getCurrentTexture().createView();
     this.postProcess.updateTimeOfDay(this.dayNightCycle.timeOfDay);
+    this.postProcess.updateUnderwaterDepth(this.underwaterDepth);
     this.postProcess.renderBloomAndTonemap(encoder, swapChainView);
 
     const commandBuffer = encoder.finish();

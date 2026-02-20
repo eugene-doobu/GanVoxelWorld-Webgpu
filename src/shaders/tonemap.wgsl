@@ -5,6 +5,10 @@ struct TonemapParams {
   exposure: f32,
   timeOfDay: f32,  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
   autoExposureEnabled: f32,
+  underwaterDepth: f32,  // 0 = not underwater, >0 = camera depth below water
+  pad0: f32,
+  pad1: f32,
+  pad2: f32,
 };
 
 @group(0) @binding(0) var hdrTex: texture_2d<f32>;
@@ -74,8 +78,19 @@ fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-  let hdrColor = textureSampleLevel(hdrTex, linearSampler, input.uv, 0.0).rgb;
-  let bloomColor = textureSampleLevel(bloomTex, linearSampler, input.uv, 0.0).rgb;
+  // Chromatic Aberration — radial RGB channel offset
+  // TODO: connect to Config.data.rendering.postProcess.chromaticAberration
+  let caStrength = 0.002;
+  let caDir = (input.uv - 0.5) * caStrength;
+  let hdrR = textureSampleLevel(hdrTex, linearSampler, input.uv + caDir, 0.0).r;
+  let hdrB = textureSampleLevel(hdrTex, linearSampler, input.uv - caDir, 0.0).b;
+  let hdrG = textureSampleLevel(hdrTex, linearSampler, input.uv, 0.0).g;
+  let hdrColor = vec3f(hdrR, hdrG, hdrB);
+
+  let bloomR = textureSampleLevel(bloomTex, linearSampler, input.uv + caDir, 0.0).r;
+  let bloomB = textureSampleLevel(bloomTex, linearSampler, input.uv - caDir, 0.0).b;
+  let bloomG = textureSampleLevel(bloomTex, linearSampler, input.uv, 0.0).g;
+  let bloomColor = vec3f(bloomR, bloomG, bloomB);
 
   var color = hdrColor + bloomColor * params.bloomIntensity;
   let autoExp = textureSampleLevel(adaptedLumTex, linearSampler, vec2f(0.5), 0.0).r;
@@ -94,6 +109,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Gamma correction (linear → sRGB)
   color = pow(color, vec3<f32>(1.0 / 2.2));
+
+  // Vignette — smooth radial darkening from screen edges
+  // TODO: connect to Config.data.rendering.postProcess.vignette
+  let vignetteCoord = input.uv * 2.0 - 1.0;
+  let vignetteDist = length(vignetteCoord);
+  let vignette = 1.0 - smoothstep(0.5, 1.5, vignetteDist);
+  color *= mix(1.0, vignette, 0.4);
+
+  // Underwater post-processing
+  if (params.underwaterDepth > 0.0) {
+    // Stronger vignette underwater (simulate water surface light cone)
+    let uwVignette = 1.0 - smoothstep(0.3, 1.2, vignetteDist);
+    let uwVignetteStrength = min(params.underwaterDepth * 0.15, 0.6);
+    color *= mix(1.0, uwVignette, uwVignetteStrength);
+
+    // Blue-green underwater tint
+    let tintStrength = min(params.underwaterDepth * 0.08, 0.25);
+    color = mix(color, color * vec3f(0.7, 0.9, 1.0), tintStrength);
+  }
 
   return vec4<f32>(color, 1.0);
 }

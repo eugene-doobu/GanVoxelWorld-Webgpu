@@ -345,6 +345,8 @@ export class TAA {
     this.frameIndex = (this.frameIndex + 1) % 256;
   }
 
+  get velocityView(): GPUTextureView { return this.velocityTextureView; }
+
   storePrevViewProj(viewProj: mat4): void {
     mat4.copy(this.prevViewProj, viewProj);
   }

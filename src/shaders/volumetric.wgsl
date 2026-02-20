@@ -86,14 +86,34 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
   return output;
 }
 
+// Dual-lobe Henyey-Greenstein: forward scatter + back scatter
+fn dualLobeHG(cosTheta: f32) -> f32 {
+  let forward = henyeyGreenstein(cosTheta, 0.75);
+  let back    = henyeyGreenstein(cosTheta, -0.3);
+  return mix(back, forward, 0.7);
+}
+
+// Exponential height fog density
+fn heightFogDensity(height: f32, seaLevel: f32) -> f32 {
+  let heightAboveSea = height - seaLevel;
+  let heightFalloff = 0.08;       // steeper falloff — fog clears faster above sea level
+  let referenceDensity = 0.6;     // reduced from 1.0 to prevent washout
+  if (heightAboveSea <= 0.0) {
+    // Below sea level: denser, but not full 1.0 (let density param control overall)
+    return referenceDensity * (1.0 + min(-heightAboveSea * 0.02, 0.4));
+  }
+  return referenceDensity * exp(-heightFalloff * heightAboveSea);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let depth = textureLoad(depthTex, vec2<i32>(input.position.xy), 0);
 
   let density = uniforms.params.x;
-  let g = uniforms.params.y;
   let maxDist = uniforms.params.z;
   let numSteps = i32(uniforms.params.w);
+
+  let seaLevel = uniforms.cameraPos.w;
 
   // Reconstruct world position of pixel
   let worldPos = reconstructWorldPos(input.uv, depth);
@@ -108,13 +128,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let marchDist = min(rayLength, maxDist);
   let stepSize = marchDist / f32(numSteps);
 
-  // Phase function: angle between view ray and sun direction
+  // Phase function with dual-lobe HG
   let sunDir = normalize(uniforms.sunDir.xyz);
   let cosTheta = dot(rayDirNorm, sunDir);
-  let phase = henyeyGreenstein(cosTheta, g);
+  let phase = dualLobeHG(cosTheta);
+
+  // Fog color variation: warm near sun, cool away from sun (kept dim to avoid over-brightening)
+  let warmFogColor = vec3<f32>(0.85, 0.75, 0.55);
+  let coolFogColor = vec3<f32>(0.45, 0.5, 0.65);
+  // Use a 0-1 blend based on phase contribution (normalized roughly)
+  let phaseNorm = saturate((phase - 0.05) / 0.4);
+  let fogTint = mix(coolFogColor, warmFogColor, phaseNorm);
+
+  // Ambient scattering constant (keep very subtle to avoid washout)
+  let ambientAmount = 0.03;
+
+  // Underwater suppression: if camera is below sea level, reduce volumetric
+  let camUnderwaterFactor = saturate(1.0 - saturate((seaLevel - camPos.y) * 0.1));
 
   // Accumulate scattered light via ray marching
-  var scatteredLight = 0.0;
+  var sunAccum = 0.0;
+  var ambientAccum = 0.0;
+
   // Temporal dithered start offset to reduce banding
   let frameIndex = uniforms.sunDir.w;
   let ditherPattern = fract(dot(input.position.xy, vec2<f32>(0.7548776662, 0.56984029)) + fract(frameIndex * 0.7548));
@@ -124,19 +159,34 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let t = startOffset + f32(i) * stepSize;
     let samplePos = camPos + rayDirNorm * t;
 
-    // Height-based density falloff (fog is denser near sea level)
-    let seaLevel = uniforms.cameraPos.w;
-    let heightFactor = exp(-max(samplePos.y - seaLevel, 0.0) * 0.02);
+    // Exponential height-based density
+    let fogDens = heightFogDensity(samplePos.y, seaLevel);
+
+    // Underwater suppression for sample points below sea level
+    let sampleUnderwaterSuppression = saturate(1.0 + (samplePos.y - seaLevel) * 0.05);
+    let effectiveDensity = fogDens * mix(0.2, 1.0, sampleUnderwaterSuppression);
 
     let shadowVal = sampleShadowAt(samplePos);
-    scatteredLight += shadowVal * heightFactor;
+
+    // Sun-directed scattering (modulated by shadow visibility)
+    sunAccum += shadowVal * effectiveDensity;
+
+    // Ambient scattering (always present, independent of shadow)
+    ambientAccum += effectiveDensity;
   }
 
-  scatteredLight *= density * stepSize * phase;
+  sunAccum *= density * stepSize * phase;
+  ambientAccum *= density * stepSize * ambientAmount;
 
   // Apply sun color and intensity
   let sunColor = uniforms.sunColor.rgb * uniforms.sunColor.w;
-  let volumetricColor = sunColor * scatteredLight;
+
+  // Sun-directed contribution tinted by fog color
+  let sunContrib = sunColor * fogTint * sunAccum;
+  // Ambient contribution with cool fog tint
+  let ambientContrib = sunColor * coolFogColor * ambientAccum;
+
+  let volumetricColor = (sunContrib + ambientContrib) * camUnderwaterFactor;
 
   return vec4<f32>(volumetricColor, 1.0);
 }
