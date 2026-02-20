@@ -4,8 +4,10 @@ import { GBuffer } from './GBuffer';
 import { ShadowMap, ChunkDrawCall } from './ShadowMap';
 import { SSAO } from './SSAO';
 import { PostProcess } from './PostProcess';
+import { TAA } from './TAA';
 import { DayNightCycle } from '../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../world/WeatherSystem';
+import { Config } from '../config/Config';
 import {
   GBUFFER_ALBEDO_FORMAT,
   GBUFFER_NORMAL_FORMAT,
@@ -24,8 +26,8 @@ import waterVertShader from '../shaders/water.vert.wgsl?raw';
 import waterFragShader from '../shaders/water.frag.wgsl?raw';
 import weatherShader from '../shaders/weather.wgsl?raw';
 
-// SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) = 144 bytes
-const SCENE_UNIFORM_SIZE = 144;
+// SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) + cloudParams(16) + viewProj(64) + contactShadowParams(16) = 240 bytes
+const SCENE_UNIFORM_SIZE = 240;
 // Camera uniform for G-Buffer pass: viewProj(64) + cameraPos(16) + fogParams(16) + time(4) + pad(12) = 112 bytes
 const CAMERA_UNIFORM_SIZE = 112;
 
@@ -52,6 +54,7 @@ export class DeferredPipeline {
   private shadowMap: ShadowMap;
   private ssao: SSAO;
   private postProcess: PostProcess;
+  private taa: TAA;
 
   // G-Buffer pass
   private gbufferPipeline!: GPURenderPipeline;
@@ -96,6 +99,7 @@ export class DeferredPipeline {
   private lastViewProj = mat4.create();
   private lastProjection = mat4.create();
   private lastInvProjection = mat4.create();
+  private unjitteredViewProj = mat4.create();
 
   // Pre-allocated uniform buffers (avoid per-frame allocations)
   private camF32 = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
@@ -129,6 +133,7 @@ export class DeferredPipeline {
     this.shadowMap = new ShadowMap(ctx);
     this.ssao = new SSAO(ctx);
     this.postProcess = new PostProcess(ctx);
+    this.taa = new TAA(ctx);
 
     this.createSamplers();
     this.createGBufferPass();
@@ -575,18 +580,37 @@ export class DeferredPipeline {
   updateCamera(
     viewProj: mat4,
     projection: mat4,
+    view: mat4,
     cameraPos: Float32Array,
     fogStart: number,
     fogEnd: number,
     dt: number,
   ): void {
-    mat4.copy(this.lastViewProj, viewProj);
+    // Store unjittered viewProj for lighting, velocity, SSR, etc.
+    mat4.copy(this.unjitteredViewProj, viewProj);
+
+    // Apply TAA jitter to projection for G-Buffer pass
+    const taaEnabled = Config.data.rendering.taa.enabled;
+    const jitteredViewProj = mat4.create();
+
+    if (taaEnabled) {
+      const [jx, jy] = this.taa.getJitter(this.ctx.canvas.width, this.ctx.canvas.height);
+      const jitteredProj = mat4.clone(projection);
+      // Apply sub-pixel jitter to projection matrix (column-major: [8] = m[2][0], [9] = m[2][1])
+      (jitteredProj as Float32Array)[8] += jx;
+      (jitteredProj as Float32Array)[9] += jy;
+      mat4.multiply(jitteredViewProj, jitteredProj, view);
+    } else {
+      mat4.copy(jitteredViewProj, viewProj);
+    }
+
+    mat4.copy(this.lastViewProj, jitteredViewProj);
     mat4.copy(this.lastProjection, projection);
     mat4.invert(this.lastInvProjection, projection);
 
-    // Camera uniform for G-Buffer pass
+    // Camera uniform for G-Buffer pass (uses jittered viewProj)
     const camF32 = this.camF32;
-    camF32.set(viewProj as Float32Array, 0);
+    camF32.set(jitteredViewProj as Float32Array, 0);
     camF32[16] = cameraPos[0];
     camF32[17] = cameraPos[1];
     camF32[18] = cameraPos[2];
@@ -601,8 +625,8 @@ export class DeferredPipeline {
     camF32[27] = 0;
     this.ctx.device.queue.writeBuffer(this.cameraUniformBuffer, 0, camF32);
 
-    // Scene uniform for lighting + sky
-    mat4.invert(this.invVP, viewProj);
+    // Scene uniform for lighting + sky (use unjittered viewProj for world reconstruction)
+    mat4.invert(this.invVP, this.unjitteredViewProj);
 
     const dnc = this.dayNightCycle;
     const sceneF32 = this.sceneF32;
@@ -626,7 +650,20 @@ export class DeferredPipeline {
     sceneF32[32] = fogStart;                           // fogParams
     sceneF32[33] = fogEnd;
     sceneF32[34] = dnc.timeOfDay;
-    sceneF32[35] = 0;
+    sceneF32[35] = Config.data.environment.cloudCoverage;
+    const cloud = Config.data.environment.cloud;
+    sceneF32[36] = cloud.baseNoiseScale;               // cloudParams.x
+    sceneF32[37] = cloud.extinction;                    // cloudParams.y
+    sceneF32[38] = cloud.multiScatterFloor;             // cloudParams.z
+    sceneF32[39] = cloud.detailStrength;                // cloudParams.w
+    // viewProj (unjittered) at offset 40 (bytes 160-223)
+    sceneF32.set(viewProj as Float32Array, 40);
+    // contactShadowParams at offset 56 (bytes 224-239)
+    const cs = Config.data.rendering.contactShadows;
+    sceneF32[56] = cs.enabled ? 1.0 : 0.0;
+    sceneF32[57] = cs.maxSteps;
+    sceneF32[58] = cs.rayLength;
+    sceneF32[59] = cs.thickness;
     this.ctx.device.queue.writeBuffer(this.sceneUniformBuffer, 0, sceneF32);
 
     // Update shadow matrices
@@ -651,9 +688,9 @@ export class DeferredPipeline {
       dnc.sunIntensity,
     );
 
-    // Update SSR uniforms
+    // Update SSR uniforms (use unjittered viewProj for stable reflections)
     this.postProcess.updateSSR(
-      viewProj as Float32Array,
+      this.unjitteredViewProj as Float32Array,
       this.invVP as Float32Array,
       cameraPos,
     );
@@ -662,8 +699,9 @@ export class DeferredPipeline {
     this.waterTime += dt;
 
     // Water vertex uniform: viewProjection(mat4x4) + time(f32) + pad(3xf32)
+    // Water uses jittered viewProj (forward pass, goes through TAA)
     const wvF32 = this.waterVertF32;
-    wvF32.set(viewProj as Float32Array, 0);
+    wvF32.set(jitteredViewProj as Float32Array, 0);
     wvF32[16] = this.waterTime;
     wvF32[17] = 0;
     wvF32[18] = 0;
@@ -704,10 +742,10 @@ export class DeferredPipeline {
     wfF32[19] = this.ctx.canvas.height;
     this.ctx.device.queue.writeBuffer(this.waterFragUniformBuffer, 0, wfF32);
 
-    // Update weather uniforms
+    // Update weather uniforms (jittered viewProj for forward pass)
     if (this.weatherSystem && this.weatherSystem.intensity > 0.001) {
       const wF32 = this.weatherF32;
-      wF32.set(viewProj as Float32Array, 0);     // viewProjection mat4
+      wF32.set(jitteredViewProj as Float32Array, 0);     // viewProjection mat4
       wF32[16] = cameraPos[0];                    // cameraPos
       wF32[17] = cameraPos[1];
       wF32[18] = cameraPos[2];
@@ -717,6 +755,11 @@ export class DeferredPipeline {
       wF32[22] = this.weatherSystem.intensity;     // intensity
       wF32[23] = 0;
       this.ctx.device.queue.writeBuffer(this.weatherUniformBuffer, 0, wF32);
+    }
+
+    // Update TAA uniforms
+    if (taaEnabled) {
+      this.taa.updateUniforms(this.unjitteredViewProj);
     }
   }
 
@@ -792,7 +835,17 @@ export class DeferredPipeline {
       this.renderWeatherPass(encoder);
     }
 
-    // 9+10. Bloom + Tone Mapping -> swapchain
+    // 9. TAA (velocity + resolve + copy back to HDR)
+    if (Config.data.rendering.taa.enabled) {
+      this.taa.setResources(this.gBuffer.depthView, this.postProcess.hdrTextureView);
+      this.taa.renderVelocity(encoder);
+      this.taa.renderResolve(encoder);
+      this.taa.copyResolvedToHDR(encoder, this.postProcess.hdrTexture);
+      this.taa.swapHistory();
+      this.taa.storePrevViewProj(this.unjitteredViewProj);
+    }
+
+    // 10+11. Bloom + Tone Mapping -> swapchain
     const swapChainView = ctx.context.getCurrentTexture().createView();
     this.postProcess.updateTimeOfDay(this.dayNightCycle.timeOfDay);
     this.postProcess.renderBloomAndTonemap(encoder, swapChainView);
@@ -1013,6 +1066,7 @@ export class DeferredPipeline {
     this.gBuffer.resize();
     this.ssao.resize();
     this.postProcess.resize();
+    this.taa.resize();
     // Invalidate bind groups
     this.bindGroupsDirty = true;
     this.waterBindGroupDirty = true;

@@ -30,5 +30,17 @@ export function buildRenderingTab(): InspectorTab {
   fog.addField({ type: 'slider', label: 'Start Ratio', configPath: 'rendering.fog.startRatio', min: 0, max: 1, step: 0.05 });
   fog.addField({ type: 'slider', label: 'End Ratio', configPath: 'rendering.fog.endRatio', min: 0.5, max: 2, step: 0.05 });
 
+  // Contact Shadows
+  const contactShadows = tab.addSection('Contact Shadows');
+  contactShadows.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.contactShadows.enabled' });
+  contactShadows.addField({ type: 'slider', label: 'Max Steps', configPath: 'rendering.contactShadows.maxSteps', min: 4, max: 32, step: 1 });
+  contactShadows.addField({ type: 'slider', label: 'Ray Length', configPath: 'rendering.contactShadows.rayLength', min: 0.1, max: 2.0, step: 0.05 });
+  contactShadows.addField({ type: 'slider', label: 'Thickness', configPath: 'rendering.contactShadows.thickness', min: 0.01, max: 1.0, step: 0.01 });
+
+  // TAA
+  const taa = tab.addSection('TAA');
+  taa.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.taa.enabled' });
+  taa.addField({ type: 'slider', label: 'Blend Factor', configPath: 'rendering.taa.blendFactor', min: 0.5, max: 0.98, step: 0.01 });
+
   return tab;
 }

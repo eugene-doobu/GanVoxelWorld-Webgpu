@@ -307,7 +307,7 @@ export class PostProcess {
     this.hdrTexture = this.ctx.device.createTexture({
       size: [w, h],
       format: HDR_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     });
     this.hdrTextureView = this.hdrTexture.createView();
 

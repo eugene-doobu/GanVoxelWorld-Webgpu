@@ -101,6 +101,10 @@ export class FlyCamera {
     return this.projection;
   }
 
+  getView(): mat4 {
+    return this.view;
+  }
+
   getSpeed(): number {
     return this.speed;
   }

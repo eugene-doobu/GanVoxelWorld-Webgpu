@@ -90,12 +90,26 @@ export interface RenderingFogConfig {
   endRatio: number;
 }
 
+export interface RenderingContactShadowsConfig {
+  enabled: boolean;
+  maxSteps: number;
+  rayLength: number;
+  thickness: number;
+}
+
+export interface RenderingTAAConfig {
+  enabled: boolean;
+  blendFactor: number;
+}
+
 export interface RenderingConfig {
   general: RenderingGeneralConfig;
   shadows: RenderingShadowsConfig;
   ssao: RenderingSSAOConfig;
   bloom: RenderingBloomConfig;
   fog: RenderingFogConfig;
+  contactShadows: RenderingContactShadowsConfig;
+  taa: RenderingTAAConfig;
 }
 
 export interface CameraConfig {
@@ -107,8 +121,18 @@ export interface CameraConfig {
   far: number;
 }
 
+export interface CloudConfig {
+  coverage: number;
+  baseNoiseScale: number;
+  extinction: number;
+  multiScatterFloor: number;
+  detailStrength: number;
+}
+
 export interface EnvironmentConfig {
   dayDurationSeconds: number;
+  cloudCoverage: number;
+  cloud: CloudConfig;
 }
 
 export interface AppConfig {
@@ -175,6 +199,8 @@ class ConfigManager {
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },
         fog: { startRatio: 0.85, endRatio: 1.15 },
+        contactShadows: { enabled: true, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
+        taa: { enabled: true, blendFactor: 0.9 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,
@@ -182,6 +208,14 @@ class ConfigManager {
       },
       environment: {
         dayDurationSeconds: 1200,
+        cloudCoverage: 0.35,
+        cloud: {
+          coverage: 0.35,
+          baseNoiseScale: 0.0018,
+          extinction: 0.3,
+          multiScatterFloor: 0.35,
+          detailStrength: 0.15,
+        },
       },
     };
   }

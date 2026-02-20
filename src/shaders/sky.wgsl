@@ -7,7 +7,10 @@ struct SceneUniforms {
   sunDir: vec4<f32>,
   sunColor: vec4<f32>,
   ambientColor: vec4<f32>,
-  fogParams: vec4<f32>,       // z = timeOfDay
+  fogParams: vec4<f32>,            // z = timeOfDay, w = cloudCoverage
+  cloudParams: vec4<f32>,          // x = baseNoiseScale, y = extinction, z = multiScatterFloor, w = detailStrength
+  viewProj: mat4x4<f32>,          // unused in sky, layout must match lighting
+  contactShadowParams: vec4<f32>,  // unused in sky, layout must match lighting
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -146,13 +149,15 @@ fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
   let wind = vec3<f32>(time * 5.0, time * 0.3, time * 2.0);
 
   // Base shape: 3-octave FBM — higher freq for less blobby clouds
-  let bp = (worldPos + wind) * 0.0018;
+  let bp = (worldPos + wind) * scene.cloudParams.x;
   var shape = snoise3d(bp)         * 0.625
             + snoise3d(bp * 2.03)  * 0.25
             + snoise3d(bp * 4.01)  * 0.125;
 
-  // Sparse coverage — wider ramp for softer edges
-  shape = remap01(shape, 0.48, 0.85);
+  // Coverage controlled by uniform (0 = clear sky, 1 = overcast)
+  let coverage = scene.fogParams.w;
+  let threshold = 1.0 - coverage;              // high threshold = sparse
+  shape = remap01(shape, threshold, threshold + 0.35);
   var density = shape * hGrad;
 
   if (density < 0.01) { return 0.0; }
@@ -163,7 +168,7 @@ fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
     let detail = snoise3d(dp)          * 0.5
                + snoise3d(dp * 2.37)   * 0.3
                + snoise3d(dp * 5.09)   * 0.2;
-    density -= detail * 0.15;
+    density -= detail * scene.cloudParams.w;
     density = max(density, 0.0);
   }
 
@@ -204,7 +209,7 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
     let density = sampleCloudDensity(pos, time, false);
     if (density < 0.01) { continue; }
 
-    let extinction = density * 0.3;
+    let extinction = density * scene.cloudParams.y;
 
     // Light march toward sun
     var lightOD = 0.0;
@@ -216,8 +221,9 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
     // Beer-Lambert with gentle absorption
     let beer = exp(-lightOD * 0.15);
 
-    // Multi-scatter floor: deep cloud interiors stay ~35% bright
-    let brightness = beer * 0.65 + 0.35;
+    // Multi-scatter floor: deep cloud interiors stay bright
+    let msFloor = scene.cloudParams.z;
+    let brightness = beer * (1.0 - msFloor) + msFloor;
 
     // Warm sunlit ↔ cool sky-blue shadow
     var cloudColor = mix(shadowColor, litColor, beer) * brightness;

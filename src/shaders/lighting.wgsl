@@ -2,12 +2,15 @@
 // Cook-Torrance BRDF with shadow mapping, SSAO, and day-night cycle
 
 struct SceneUniforms {
-  invViewProj: mat4x4<f32>,  // 64
-  cameraPos: vec4<f32>,      // 16
-  sunDir: vec4<f32>,         // 16  (xyz=direction, w=unused)
-  sunColor: vec4<f32>,       // 16  (rgb=color, w=intensity)
-  ambientColor: vec4<f32>,   // 16  (rgb=sky ambient, w=ground factor)
-  fogParams: vec4<f32>,      // 16  (x=start, y=end, z=timeOfDay, w=unused)
+  invViewProj: mat4x4<f32>,        // 64
+  cameraPos: vec4<f32>,            // 16
+  sunDir: vec4<f32>,               // 16  (xyz=direction, w=unused)
+  sunColor: vec4<f32>,             // 16  (rgb=color, w=intensity)
+  ambientColor: vec4<f32>,         // 16  (rgb=sky ambient, w=ground factor)
+  fogParams: vec4<f32>,            // 16  (x=start, y=end, z=timeOfDay, w=unused)
+  cloudParams: vec4<f32>,          // 16  (x=baseNoiseScale, y=extinction, z=multiScatterFloor, w=detailStrength)
+  viewProj: mat4x4<f32>,          // 64  (unjittered viewProj for contact shadow)
+  contactShadowParams: vec4<f32>,  // 16  (x=enabled, y=maxSteps, z=rayLength, w=thickness)
 };
 
 struct ShadowUniforms {
@@ -142,6 +145,54 @@ fn sampleShadow(worldPos: vec3<f32>, viewDist: f32) -> f32 {
   return shadowFactor / 9.0;
 }
 
+// ====================== Contact Shadow ======================
+fn contactShadow(worldPos: vec3f, sunDir: vec3f) -> f32 {
+  let enabled = scene.contactShadowParams.x;
+  if (enabled < 0.5) {
+    return 1.0;
+  }
+
+  let maxSteps = i32(scene.contactShadowParams.y);
+  let rayLength = scene.contactShadowParams.z;
+  let thickness = scene.contactShadowParams.w;
+  let dims = textureDimensions(gDepth);
+
+  // March along sunDir in world space, project each sample to screen
+  let stepSize = rayLength / f32(maxSteps);
+
+  for (var i = 1; i <= maxSteps; i++) {
+    let samplePos = worldPos + sunDir * stepSize * f32(i);
+
+    // Project to clip space using unjittered viewProj
+    let clipPos = scene.viewProj * vec4f(samplePos, 1.0);
+    let ndc = clipPos.xyz / clipPos.w;
+
+    // NDC to UV (flip Y for WebGPU)
+    let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+
+    // Skip if outside screen
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+      continue;
+    }
+
+    let texCoord = vec2i(vec2f(f32(dims.x), f32(dims.y)) * uv);
+    let sceneDepth = textureLoad(gDepth, texCoord, 0);
+
+    // Compare: ray depth vs scene depth
+    let rayDepth = ndc.z;
+    let depthDiff = rayDepth - sceneDepth;
+
+    // Occluded if ray is behind surface within thickness
+    if (depthDiff > 0.0 && depthDiff < thickness) {
+      // Fade based on march distance
+      let t = f32(i) / f32(maxSteps);
+      return mix(0.3, 1.0, t * t);
+    }
+  }
+
+  return 1.0;
+}
+
 // ====================== Fragment Shader ======================
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
@@ -202,9 +253,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let viewDist = distance(scene.cameraPos.xyz, worldPos);
   let shadowFactor = sampleShadow(worldPos, viewDist);
 
+  // Contact shadow
+  let contactFactor = contactShadow(worldPos, L);
+
   // Direct lighting
   let sunColor = scene.sunColor.rgb * scene.sunColor.w;
-  let directLight = (diffuse + specular) * sunColor * NdotL * shadowFactor;
+  let directLight = (diffuse + specular) * sunColor * NdotL * shadowFactor * contactFactor;
 
   // Hemisphere ambient
   let skyAmbient = scene.ambientColor.rgb;

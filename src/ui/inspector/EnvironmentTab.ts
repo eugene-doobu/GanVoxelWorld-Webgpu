@@ -1,4 +1,5 @@
 import { InspectorTab } from './InspectorTab';
+import { Config } from '../../config/Config';
 import { DayNightCycle } from '../../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../../world/WeatherSystem';
 
@@ -42,6 +43,20 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   dayNight.addElement(timeRow);
 
   dayNight.addField({ type: 'slider', label: 'Day Duration', configPath: 'environment.dayDurationSeconds', min: 60, max: 3600, step: 60 });
+  // Cloud section
+  const clouds = tab.addSection('Clouds');
+  clouds.addField({ type: 'slider', label: 'Coverage', configPath: 'environment.cloud.coverage', min: 0, max: 1, step: 0.05 });
+  clouds.addField({ type: 'slider', label: 'Noise Scale', configPath: 'environment.cloud.baseNoiseScale', min: 0.0005, max: 0.005, step: 0.0001 });
+  clouds.addField({ type: 'slider', label: 'Extinction', configPath: 'environment.cloud.extinction', min: 0.05, max: 1.0, step: 0.05 });
+  clouds.addField({ type: 'slider', label: 'Scatter Floor', configPath: 'environment.cloud.multiScatterFloor', min: 0, max: 0.8, step: 0.05 });
+  clouds.addField({ type: 'slider', label: 'Detail Str.', configPath: 'environment.cloud.detailStrength', min: 0, max: 0.5, step: 0.01 });
+
+  // Sync cloud.coverage → cloudCoverage (legacy uniform path)
+  Config.onChange((path) => {
+    if (path === 'environment.cloud.coverage') {
+      Config.data.environment.cloudCoverage = Config.data.environment.cloud.coverage;
+    }
+  });
 
   // Auto-update time display
   (tab as any)._updateTime = () => {

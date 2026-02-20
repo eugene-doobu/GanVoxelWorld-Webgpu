@@ -108,6 +108,7 @@ async function main() {
 
     const viewProj = camera.getViewProjection(ctx.aspectRatio);
     const projection = camera.getProjection();
+    const view = camera.getView();
     const fog = Config.data.rendering.fog;
     const fogDist = chunkManager.renderDistance * CHUNK_WIDTH;
     const fogMul = weatherSystem.getFogDensityMultiplier();
@@ -115,6 +116,7 @@ async function main() {
     pipeline.updateCamera(
       viewProj,
       projection,
+      view,
       camera.position as Float32Array,
       fogDist * fog.startRatio / fogMul,
       fogDist * fog.endRatio / fogMul,
