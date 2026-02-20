@@ -640,11 +640,11 @@ export class DeferredPipeline {
     sceneF32[16] = cameraPos[0];                       // cameraPos
     sceneF32[17] = cameraPos[1];
     sceneF32[18] = cameraPos[2];
-    sceneF32[19] = 0;
+    sceneF32[19] = Config.data.terrain.height.seaLevel;  // cameraPos.w = waterLevel
     sceneF32[20] = dnc.sunDir[0];                      // sunDir
     sceneF32[21] = dnc.sunDir[1];
     sceneF32[22] = dnc.sunDir[2];
-    sceneF32[23] = 0;
+    sceneF32[23] = this.waterTime;                     // sunDir.w = waterTime
     sceneF32[24] = dnc.sunColor[0];                    // sunColor
     sceneF32[25] = dnc.sunColor[1];
     sceneF32[26] = dnc.sunColor[2];

@@ -222,6 +222,28 @@ fn contactShadow(worldPos: vec3f, sunDir: vec3f) -> f32 {
   return 1.0;
 }
 
+// ====================== Water Caustics ======================
+fn waterCaustics(worldPos: vec3f, time: f32) -> f32 {
+  let p = worldPos.xz;
+
+  // Octave 1: large slow waves
+  var wave1 = 0.0;
+  wave1 += sin(dot(p, vec2f(0.8, 0.6)) * 0.4 + time * 0.6);
+  wave1 += sin(dot(p, vec2f(-0.5, 0.9)) * 0.5 + time * 0.45);
+  wave1 += sin(dot(p, vec2f(0.9, -0.4)) * 0.35 + time * 0.55);
+  let c1 = 1.0 - abs(sin(wave1 * 1.2));
+
+  // Octave 2: small fast detail
+  var wave2 = 0.0;
+  wave2 += sin(dot(p, vec2f(1.2, -0.8)) * 0.9 + time * 1.1);
+  wave2 += sin(dot(p, vec2f(-0.7, 1.3)) * 1.1 + time * 0.9);
+  wave2 += sin(dot(p, vec2f(0.6, 1.1)) * 0.8 + time * 1.3);
+  let c2 = 1.0 - abs(sin(wave2 * 1.5));
+
+  // Combine: intersection of caustic lines creates bright spots
+  return c1 * c2;
+}
+
 // ====================== Fragment Shader ======================
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
@@ -324,6 +346,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   var finalColor = directLight + ambient + emissiveColor + pointLightContrib;
+
+  // Water caustics (underwater surfaces only)
+  let waterLevel = scene.cameraPos.w;
+  let waterTime = scene.sunDir.w;
+  if (worldPos.y < waterLevel) {
+    let underwaterDepth = waterLevel - worldPos.y;
+    let depthAtten = exp(-underwaterDepth * 0.15);
+    let normalUp = max(dot(N, vec3f(0.0, 1.0, 0.0)), 0.0);
+    let causticPattern = waterCaustics(worldPos, waterTime);
+    let causticLight = sunColor * causticPattern * depthAtten * normalUp * shadowFactor * 0.5;
+    finalColor += causticLight;
+  }
 
   // Atmospheric scattering fog
   let fogStart = scene.fogParams.x;
