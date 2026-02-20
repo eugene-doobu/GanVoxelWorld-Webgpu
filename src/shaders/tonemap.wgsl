@@ -4,13 +4,14 @@ struct TonemapParams {
   bloomIntensity: f32,
   exposure: f32,
   timeOfDay: f32,  // 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
-  _pad0: f32,
+  autoExposureEnabled: f32,
 };
 
 @group(0) @binding(0) var hdrTex: texture_2d<f32>;
 @group(0) @binding(1) var bloomTex: texture_2d<f32>;
 @group(0) @binding(2) var linearSampler: sampler;
 @group(0) @binding(3) var<uniform> params: TonemapParams;
+@group(0) @binding(4) var adaptedLumTex: texture_2d<f32>;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -41,9 +42,9 @@ fn acesFilm(x: vec3<f32>) -> vec3<f32> {
 fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
   var c = color;
 
-  // 1. Color temperature: warm golden during day, cool blue at night
+  // 1. Color temperature: warm golden during day, stronger cool blue at night
   let dayFactor = smoothstep(0.2, 0.3, timeOfDay) * (1.0 - smoothstep(0.7, 0.8, timeOfDay));
-  let warmth = mix(vec3f(0.9, 0.95, 1.1), vec3f(1.05, 1.02, 0.95), dayFactor);
+  let warmth = mix(vec3f(0.85, 0.9, 1.2), vec3f(1.05, 1.02, 0.95), dayFactor);
   c *= warmth;
 
   // 2. Sunrise/sunset golden hour tint
@@ -52,9 +53,10 @@ fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
   let goldenHour = sunriseFactor + sunsetFactor;
   c = mix(c, c * vec3f(1.15, 0.95, 0.8), goldenHour * 0.4);
 
-  // 3. Vibrance (subtle saturation boost)
+  // 3. Vibrance with scotopic effect (reduced saturation at night)
   let luminance = dot(c, vec3f(0.2126, 0.7152, 0.0722));
-  let saturationBoost = 1.15;
+  let nightAmount = 1.0 - dayFactor;
+  let saturationBoost = mix(0.85, 1.15, dayFactor);
   c = mix(vec3f(luminance), c, saturationBoost);
 
   // 4. Soft contrast S-curve
@@ -62,8 +64,9 @@ fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
   c = c * 1.05;
   c = c + 0.5;
 
-  // 5. Lift/Gamma/Gain
-  let lift = vec3f(0.01, 0.01, 0.015);
+  // 5. Lift/Gamma/Gain — extra blue lift at night for moonlit atmosphere
+  let nightBlueLift = vec3f(0.0, 0.0, 0.02) * nightAmount;
+  let lift = vec3f(0.01, 0.01, 0.015) + nightBlueLift;
   let gain = vec3f(1.0, 0.99, 0.97);
   c = max(vec3f(0.0), c * gain + lift);
 
@@ -76,7 +79,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let bloomColor = textureSampleLevel(bloomTex, linearSampler, input.uv, 0.0).rgb;
 
   var color = hdrColor + bloomColor * params.bloomIntensity;
-  color *= params.exposure;
+  let autoExp = textureSampleLevel(adaptedLumTex, linearSampler, vec2f(0.5), 0.0).r;
+  let exposure = select(params.exposure, autoExp, params.autoExposureEnabled > 0.5);
+
+  // Night exposure boost: raise exposure at night so moonlit scenes have adequate brightness
+  let nightFactor = 1.0 - smoothstep(0.2, 0.3, params.timeOfDay) * (1.0 - smoothstep(0.7, 0.8, params.timeOfDay));
+  let nightExposureBoost = mix(1.0, 1.8, nightFactor);
+  color *= exposure * nightExposureBoost;
 
   // ACES tone mapping
   color = acesFilm(color);

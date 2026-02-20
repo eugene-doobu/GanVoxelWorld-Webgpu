@@ -80,7 +80,7 @@ async function main() {
     if (path === 'rendering.general.renderDistance') {
       chunkManager.renderDistance = Config.data.rendering.general.renderDistance;
     }
-    if (path.startsWith('rendering.bloom.')) {
+    if (path.startsWith('rendering.bloom.') || path.startsWith('rendering.autoExposure.')) {
       pipeline.updateBloomParams();
     }
   });

@@ -126,6 +126,9 @@ export class DeferredPipeline {
   // Time accumulator for water animation
   private waterTime = 0;
 
+  // Delta time cached for auto exposure
+  private cachedDt = 0;
+
   constructor(ctx: WebGPUContext, private dayNightCycle: DayNightCycle) {
     this.ctx = ctx;
 
@@ -586,6 +589,9 @@ export class DeferredPipeline {
     fogEnd: number,
     dt: number,
   ): void {
+    // Cache dt for auto exposure
+    this.cachedDt = dt;
+
     // Store unjittered viewProj for lighting, velocity, SSR, etc.
     mat4.copy(this.unjitteredViewProj, viewProj);
 
@@ -728,13 +734,11 @@ export class DeferredPipeline {
     wfF32[9] = dnc.sunColor[1];
     wfF32[10] = dnc.sunColor[2];
     wfF32[11] = 0.1;   // nearPlane (matches FlyCamera)
-    // Compute fog color from time of day (must match lighting.wgsl FOG_COLOR constants exactly)
-    const timeOfDay = dnc.timeOfDay;
-    const dayFactor = Math.max(0, Math.min(1, 1.0 - Math.abs(timeOfDay - 0.5) * 4.0));
-    // FOG_COLOR_DAY = (0.40, 0.50, 0.62), FOG_COLOR_NIGHT = (0.02, 0.02, 0.05)
-    wfF32[12] = 0.02 + 0.38 * dayFactor;
-    wfF32[13] = 0.02 + 0.48 * dayFactor;
-    wfF32[14] = 0.05 + 0.57 * dayFactor;
+    // Compute atmospheric fog color (matches lighting.wgsl atmosphericFogColor)
+    const fogCol = this.computeAtmosphericFogColor(view);
+    wfF32[12] = fogCol[0];
+    wfF32[13] = fogCol[1];
+    wfF32[14] = fogCol[2];
     wfF32[15] = 1000.0; // farPlane (matches FlyCamera)
     wfF32[16] = fogStart;
     wfF32[17] = fogEnd;
@@ -845,7 +849,10 @@ export class DeferredPipeline {
       this.taa.storePrevViewProj(this.unjitteredViewProj);
     }
 
-    // 10+11. Bloom + Tone Mapping -> swapchain
+    // 10. Auto Exposure (luminance extraction + adaptation)
+    this.postProcess.renderAutoExposure(encoder, this.cachedDt);
+
+    // 11+12. Bloom + Tone Mapping -> swapchain
     const swapChainView = ctx.context.getCurrentTexture().createView();
     this.postProcess.updateTimeOfDay(this.dayNightCycle.timeOfDay);
     this.postProcess.renderBloomAndTonemap(encoder, swapChainView);
@@ -1060,6 +1067,44 @@ export class DeferredPipeline {
     pass.setBindGroup(0, this.weatherBindGroup);
     pass.draw(6, WEATHER_PARTICLE_COUNT);
     pass.end();
+  }
+
+  private computeAtmosphericFogColor(view: mat4): [number, number, number] {
+    // Extract camera forward direction from view matrix: -row2 of view
+    const fwd = [-((view as Float32Array)[2]), -((view as Float32Array)[6]), -((view as Float32Array)[10])];
+    const len = Math.sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+    if (len > 0) { fwd[0] /= len; fwd[1] /= len; fwd[2] /= len; }
+
+    const dnc = this.dayNightCycle;
+    const sd = dnc.sunDir;
+    const sunHeight = sd[1];
+    const cosTheta = fwd[0] * sd[0] + fwd[1] * sd[1] + fwd[2] * sd[2];
+
+    // Rayleigh phase
+    const rayleigh = (3 / (16 * Math.PI)) * (1 + cosTheta * cosTheta);
+    // Mie HG phase (g=0.76)
+    const g = 0.76, g2 = g * g;
+    const mie = (1 - g2) / (4 * Math.PI * Math.pow(1 + g2 - 2 * g * cosTheta, 1.5));
+
+    // Horizon base + scattering
+    let fr = 0.60 + 0.3 * 0.8 * rayleigh + 1.0 * 0.02 * mie;
+    let fg = 0.75 + 0.55 * 0.8 * rayleigh + 0.95 * 0.02 * mie;
+    let fb = 0.92 + 0.95 * 0.8 * rayleigh + 0.85 * 0.02 * mie;
+
+    // Sunset warming
+    const sunsetFactor = 1 - Math.min(1, Math.max(0, Math.abs(sunHeight) * 3));
+    const warmMul = sunsetFactor * Math.max(cosTheta, 0) * 0.5;
+    fr += 1.2 * warmMul;
+    fg += 0.5 * warmMul;
+    fb += 0.15 * warmMul;
+
+    // Night darkening
+    const nightFactor = Math.min(1, Math.max(0, -sunHeight * 4 - 0.2));
+    fr = fr * (1 - nightFactor) + 0.005 * nightFactor;
+    fg = fg * (1 - nightFactor) + 0.007 * nightFactor;
+    fb = fb * (1 - nightFactor) + 0.02 * nightFactor;
+
+    return [fr, fg, fb];
   }
 
   private handleResize(): void {

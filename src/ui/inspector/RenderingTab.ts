@@ -42,5 +42,13 @@ export function buildRenderingTab(): InspectorTab {
   taa.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.taa.enabled' });
   taa.addField({ type: 'slider', label: 'Blend Factor', configPath: 'rendering.taa.blendFactor', min: 0.5, max: 0.98, step: 0.01 });
 
+  // Auto Exposure
+  const autoExposure = tab.addSection('Auto Exposure');
+  autoExposure.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.autoExposure.enabled' });
+  autoExposure.addField({ type: 'slider', label: 'Adapt Speed', configPath: 'rendering.autoExposure.adaptSpeed', min: 0.1, max: 5, step: 0.1 });
+  autoExposure.addField({ type: 'slider', label: 'Key Value', configPath: 'rendering.autoExposure.keyValue', min: 0.05, max: 0.5, step: 0.01 });
+  autoExposure.addField({ type: 'slider', label: 'Min Exposure', configPath: 'rendering.autoExposure.minExposure', min: 0.01, max: 1.0, step: 0.01 });
+  autoExposure.addField({ type: 'slider', label: 'Max Exposure', configPath: 'rendering.autoExposure.maxExposure', min: 1.0, max: 10.0, step: 0.1 });
+
   return tab;
 }

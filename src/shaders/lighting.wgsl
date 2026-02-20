@@ -53,8 +53,37 @@ struct PointLightBuffer {
 
 // ====================== Constants ======================
 const PI: f32 = 3.14159265359;
-const FOG_COLOR_DAY = vec3<f32>(0.40, 0.50, 0.62);
-const FOG_COLOR_NIGHT = vec3<f32>(0.02, 0.02, 0.05);
+
+// ====================== Atmospheric Scattering (Fog) ======================
+fn rayleighPhase(cosTheta: f32) -> f32 {
+  return 3.0 / (16.0 * PI) * (1.0 + cosTheta * cosTheta);
+}
+
+fn hgPhase(cosTheta: f32, g: f32) -> f32 {
+  let g2 = g * g;
+  let num = 1.0 - g2;
+  let denom = 4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
+  return num / denom;
+}
+
+fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, sunHeight: f32) -> vec3f {
+  let cosTheta = dot(normalize(viewDir), sunDir);
+  // Rayleigh (blue sky)
+  let rayleigh = rayleighPhase(cosTheta);
+  let rayleighColor = vec3f(0.3, 0.55, 0.95) * rayleigh;
+  // Mie (warm forward scatter)
+  let mie = hgPhase(cosTheta, 0.76);
+  let mieColor = vec3f(1.0, 0.95, 0.85) * mie * 0.02;
+  // Horizon base + scattering
+  var fogColor = vec3f(0.60, 0.75, 0.92) + rayleighColor * 0.8 + mieColor;
+  // Sunset warming
+  let sunsetFactor = 1.0 - clamp(abs(sunHeight) * 3.0, 0.0, 1.0);
+  fogColor += vec3f(1.2, 0.5, 0.15) * sunsetFactor * max(cosTheta, 0.0) * 0.5;
+  // Night darkening
+  let nightFactor = clamp(-sunHeight * 4.0 - 0.2, 0.0, 1.0);
+  fogColor = mix(fogColor, vec3f(0.005, 0.007, 0.02), nightFactor);
+  return fogColor;
+}
 
 // ====================== Fullscreen Vertex ======================
 struct VertexOutput {
@@ -296,13 +325,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   var finalColor = directLight + ambient + emissiveColor + pointLightContrib;
 
-  // Fog
+  // Atmospheric scattering fog
   let fogStart = scene.fogParams.x;
   let fogEnd = scene.fogParams.y;
-  let timeOfDay = scene.fogParams.z;
   let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-  let dayFactor = clamp(1.0 - abs(timeOfDay - 0.5) * 4.0, 0.0, 1.0);
-  let fogColor = mix(FOG_COLOR_NIGHT, FOG_COLOR_DAY, dayFactor);
+  let viewDir = worldPos - scene.cameraPos.xyz;
+  let sunDir3 = normalize(scene.sunDir.xyz);
+  let fogColor = atmosphericFogColor(viewDir, sunDir3, sunDir3.y);
   finalColor = mix(finalColor, fogColor, fogFactor);
 
   return vec4<f32>(finalColor, 1.0);

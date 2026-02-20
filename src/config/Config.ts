@@ -102,6 +102,14 @@ export interface RenderingTAAConfig {
   blendFactor: number;
 }
 
+export interface RenderingAutoExposureConfig {
+  enabled: boolean;
+  adaptSpeed: number;
+  keyValue: number;
+  minExposure: number;
+  maxExposure: number;
+}
+
 export interface RenderingConfig {
   general: RenderingGeneralConfig;
   shadows: RenderingShadowsConfig;
@@ -110,6 +118,7 @@ export interface RenderingConfig {
   fog: RenderingFogConfig;
   contactShadows: RenderingContactShadowsConfig;
   taa: RenderingTAAConfig;
+  autoExposure: RenderingAutoExposureConfig;
 }
 
 export interface CameraConfig {
@@ -201,6 +210,7 @@ class ConfigManager {
         fog: { startRatio: 0.85, endRatio: 1.15 },
         contactShadows: { enabled: true, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
         taa: { enabled: true, blendFactor: 0.9 },
+        autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.18, minExposure: 0.1, maxExposure: 5.0 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,

@@ -1,4 +1,4 @@
-import { HDR_FORMAT } from '../constants';
+import { HDR_FORMAT, LUMINANCE_FORMAT } from '../constants';
 import { Config } from '../config/Config';
 import { WebGPUContext } from './WebGPUContext';
 
@@ -8,6 +8,12 @@ import bloomUpsampleShader from '../shaders/bloom_upsample.wgsl?raw';
 import tonemapShader from '../shaders/tonemap.wgsl?raw';
 import volumetricShader from '../shaders/volumetric.wgsl?raw';
 import ssrShader from '../shaders/ssr.wgsl?raw';
+import lumExtractShader from '../shaders/lum_extract.wgsl?raw';
+import lumDownsampleShader from '../shaders/lum_downsample.wgsl?raw';
+import lumAdaptShader from '../shaders/lum_adapt.wgsl?raw';
+
+// AdaptParams: adaptSpeed(4) + keyValue(4) + minExposure(4) + maxExposure(4) + dt(4) + pad(12) = 32 bytes
+const ADAPT_PARAMS_SIZE = 32;
 
 // VolumetricUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + params(16) = 128 bytes
 const VOLUMETRIC_UNIFORM_SIZE = 128;
@@ -76,11 +82,30 @@ export class PostProcess {
   private ssrMaterialView: GPUTextureView | null = null;
   private ssrDepthView: GPUTextureView | null = null;
 
+  // Auto Exposure
+  private lumExtractPipeline!: GPURenderPipeline;
+  private lumDownsamplePipeline!: GPURenderPipeline;
+  private lumAdaptPipeline!: GPURenderPipeline;
+  private lumExtractBGL!: GPUBindGroupLayout;
+  private lumDownsampleBGL!: GPUBindGroupLayout;
+  private lumAdaptBGL!: GPUBindGroupLayout;
+  private lumMips: GPUTexture[] = [];
+  private lumMipViews: GPUTextureView[] = [];
+  private adaptedLumTextures: [GPUTexture, GPUTexture] | null = null;
+  private adaptedLumViews: [GPUTextureView, GPUTextureView] | null = null;
+  private adaptParamsBuffer!: GPUBuffer;
+  private adaptParamsF32 = new Float32Array(ADAPT_PARAMS_SIZE / 4);
+  private lumExtractBindGroup: GPUBindGroup | null = null;
+  private lumDownsampleBindGroups: GPUBindGroup[] = [];
+  private lumAdaptBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
+  private adaptPingPong = 0;
+
   constructor(ctx: WebGPUContext) {
     this.ctx = ctx;
     this.createSampler();
     this.createUniformBuffers();
     this.createPipelines();
+    this.createAutoExposurePipelines();
     this.createTextures();
   }
 
@@ -133,6 +158,12 @@ export class PostProcess {
     // SSR uniforms
     this.ssrUniformBuffer = device.createBuffer({
       size: SSR_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Adapt params
+    this.adaptParamsBuffer = device.createBuffer({
+      size: ADAPT_PARAMS_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -215,6 +246,7 @@ export class PostProcess {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
       ],
     });
 
@@ -291,6 +323,72 @@ export class PostProcess {
     });
   }
 
+  private createAutoExposurePipelines(): void {
+    const device = this.ctx.device;
+
+    // Lum extract: HDR texture + sampler → r16float quarter-res
+    this.lumExtractBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+
+    const lumExtractModule = device.createShaderModule({ code: lumExtractShader });
+    this.lumExtractPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.lumExtractBGL] }),
+      vertex: { module: lumExtractModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: lumExtractModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: LUMINANCE_FORMAT }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // Lum downsample: same layout as bloom downsample but r16float target
+    this.lumDownsampleBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      ],
+    });
+
+    const lumDownsampleModule = device.createShaderModule({ code: lumDownsampleShader });
+    this.lumDownsamplePipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.lumDownsampleBGL] }),
+      vertex: { module: lumDownsampleModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: lumDownsampleModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: LUMINANCE_FORMAT }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // Lum adapt: currentLum + prevAdapted + sampler + params → r16float 1x1
+    this.lumAdaptBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    const lumAdaptModule = device.createShaderModule({ code: lumAdaptShader });
+    this.lumAdaptPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.lumAdaptBGL] }),
+      vertex: { module: lumAdaptModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: lumAdaptModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: LUMINANCE_FORMAT }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+  }
+
   createTextures(): void {
     const bloomMipLevels = Config.data.rendering.bloom.mipLevels;
 
@@ -300,6 +398,15 @@ export class PostProcess {
     for (const t of this.bloomMips) t.destroy();
     this.bloomMips = [];
     this.bloomMipViews = [];
+    for (const t of this.lumMips) t.destroy();
+    this.lumMips = [];
+    this.lumMipViews = [];
+    if (this.adaptedLumTextures) {
+      this.adaptedLumTextures[0].destroy();
+      this.adaptedLumTextures[1].destroy();
+      this.adaptedLumTextures = null;
+      this.adaptedLumViews = null;
+    }
 
     const w = this.ctx.canvas.width;
     const h = this.ctx.canvas.height;
@@ -332,6 +439,44 @@ export class PostProcess {
       mipW = Math.max(1, Math.floor(mipW / 2));
       mipH = Math.max(1, Math.floor(mipH / 2));
     }
+
+    // Create luminance mip chain (quarter-res → 1x1)
+    let lumW = Math.max(1, Math.floor(w / 4));
+    let lumH = Math.max(1, Math.floor(h / 4));
+    while (lumW > 1 || lumH > 1) {
+      const tex = this.ctx.device.createTexture({
+        size: [lumW, lumH],
+        format: LUMINANCE_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.lumMips.push(tex);
+      this.lumMipViews.push(tex.createView());
+      lumW = Math.max(1, Math.floor(lumW / 2));
+      lumH = Math.max(1, Math.floor(lumH / 2));
+    }
+    // Final 1x1 mip
+    const lumFinal = this.ctx.device.createTexture({
+      size: [1, 1],
+      format: LUMINANCE_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.lumMips.push(lumFinal);
+    this.lumMipViews.push(lumFinal.createView());
+
+    // Adapted luminance ping-pong (1x1, r16float)
+    const adaptTexA = this.ctx.device.createTexture({
+      size: [1, 1],
+      format: LUMINANCE_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const adaptTexB = this.ctx.device.createTexture({
+      size: [1, 1],
+      format: LUMINANCE_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.adaptedLumTextures = [adaptTexA, adaptTexB];
+    this.adaptedLumViews = [adaptTexA.createView(), adaptTexB.createView()];
+    this.adaptPingPong = 0;
 
     this.rebuildBindGroups();
   }
@@ -374,7 +519,19 @@ export class PostProcess {
       }));
     }
 
-    // Tonemap
+    // Tonemap (uses current adapted luminance texture)
+    this.rebuildTonemapBindGroup();
+
+    // Auto exposure bind groups
+    this.rebuildAutoExposureBindGroups();
+  }
+
+  private rebuildTonemapBindGroup(): void {
+    // Use current read-side adapted luminance view
+    const adaptedView = this.adaptedLumViews
+      ? this.adaptedLumViews[this.adaptPingPong]
+      : null;
+    if (!adaptedView) return;
     this.tonemapBindGroup = this.ctx.device.createBindGroup({
       layout: this.tonemapBGL,
       entries: [
@@ -382,8 +539,59 @@ export class PostProcess {
         { binding: 1, resource: this.bloomMipViews[0] },
         { binding: 2, resource: this.linearSampler },
         { binding: 3, resource: { buffer: this.tonemapParamsBuffer } },
+        { binding: 4, resource: adaptedView },
       ],
     });
+  }
+
+  private rebuildAutoExposureBindGroups(): void {
+    if (!this.adaptedLumViews || this.lumMipViews.length === 0) return;
+
+    // Lum extract: HDR → lumMips[0]
+    this.lumExtractBindGroup = this.ctx.device.createBindGroup({
+      layout: this.lumExtractBGL,
+      entries: [
+        { binding: 0, resource: this.hdrTextureView },
+        { binding: 1, resource: this.linearSampler },
+      ],
+    });
+
+    // Lum downsample chain: lumMips[i-1] → lumMips[i]
+    this.lumDownsampleBindGroups = [];
+    for (let i = 1; i < this.lumMipViews.length; i++) {
+      this.lumDownsampleBindGroups.push(this.ctx.device.createBindGroup({
+        layout: this.lumDownsampleBGL,
+        entries: [
+          { binding: 0, resource: this.lumMipViews[i - 1] },
+          { binding: 1, resource: this.linearSampler },
+        ],
+      }));
+    }
+
+    // Lum adapt: 2 bind groups for ping-pong
+    // BG[0]: reads adapted[0], writes adapted[1]
+    // BG[1]: reads adapted[1], writes adapted[0]
+    const lastLumView = this.lumMipViews[this.lumMipViews.length - 1];
+    this.lumAdaptBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.lumAdaptBGL,
+        entries: [
+          { binding: 0, resource: lastLumView },
+          { binding: 1, resource: this.adaptedLumViews[0] },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.adaptParamsBuffer } },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.lumAdaptBGL,
+        entries: [
+          { binding: 0, resource: lastLumView },
+          { binding: 1, resource: this.adaptedLumViews[1] },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.adaptParamsBuffer } },
+        ],
+      }),
+    ];
   }
 
   setVolumetricResources(
@@ -534,12 +742,86 @@ export class PostProcess {
 
   updateBloomParams(): void {
     const bloom = Config.data.rendering.bloom;
+    const ae = Config.data.rendering.autoExposure;
     this.ctx.device.queue.writeBuffer(this.bloomParamsBuffer, 0, new Float32Array([
       bloom.threshold, 0.5, 0, 0,
     ]));
     this.ctx.device.queue.writeBuffer(this.tonemapParamsBuffer, 0, new Float32Array([
-      bloom.intensity, 0.7, 0, 0,
+      bloom.intensity, 0.7, 0, ae.enabled ? 1.0 : 0.0,
     ]));
+  }
+
+  renderAutoExposure(encoder: GPUCommandEncoder, dt: number): void {
+    if (!Config.data.rendering.autoExposure.enabled) return;
+    if (!this.lumExtractBindGroup || !this.lumAdaptBindGroups || !this.adaptedLumViews) return;
+
+    const ae = Config.data.rendering.autoExposure;
+
+    // Update adapt params
+    const f = this.adaptParamsF32;
+    f[0] = ae.adaptSpeed;
+    f[1] = ae.keyValue;
+    f[2] = ae.minExposure;
+    f[3] = ae.maxExposure;
+    f[4] = dt;
+    this.ctx.device.queue.writeBuffer(this.adaptParamsBuffer, 0, f);
+
+    // 1. Extract: HDR → lumMips[0] (quarter-res log luminance)
+    {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this.lumMipViews[0],
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      pass.setPipeline(this.lumExtractPipeline);
+      pass.setBindGroup(0, this.lumExtractBindGroup);
+      pass.draw(3);
+      pass.end();
+    }
+
+    // 2. Downsample chain → 1x1
+    for (let i = 1; i < this.lumMipViews.length; i++) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this.lumMipViews[i],
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      pass.setPipeline(this.lumDownsamplePipeline);
+      pass.setBindGroup(0, this.lumDownsampleBindGroups[i - 1]);
+      pass.draw(3);
+      pass.end();
+    }
+
+    // 3. Adapt: current 1x1 + prevAdapted → currAdapted
+    // Ping-pong: read from adaptPingPong, write to 1-adaptPingPong
+    const readIdx = this.adaptPingPong;
+    const writeIdx = 1 - this.adaptPingPong;
+    {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this.adaptedLumViews[writeIdx],
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      pass.setPipeline(this.lumAdaptPipeline);
+      pass.setBindGroup(0, this.lumAdaptBindGroups[readIdx]);
+      pass.draw(3);
+      pass.end();
+    }
+
+    // Swap ping-pong: next frame reads what we just wrote
+    this.adaptPingPong = writeIdx;
+
+    // Rebuild tonemap bind group to point at the newly written adapted texture
+    this.rebuildTonemapBindGroup();
   }
 
   renderBloomAndTonemap(encoder: GPUCommandEncoder, swapChainView: GPUTextureView): void {

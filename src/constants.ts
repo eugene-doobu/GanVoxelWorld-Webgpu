@@ -22,5 +22,8 @@ export const SSAO_NOISE_SIZE = 4;
 // TAA velocity buffer format
 export const VELOCITY_FORMAT: GPUTextureFormat = 'rg16float';
 
+// Luminance (auto exposure)
+export const LUMINANCE_FORMAT: GPUTextureFormat = 'r16float';
+
 // Point Lights (structural)
 export const MAX_POINT_LIGHTS = 128;
