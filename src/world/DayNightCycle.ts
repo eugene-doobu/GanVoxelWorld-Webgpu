@@ -57,26 +57,36 @@ export class DayNightCycle {
     } else if (sunHeight > -0.1) {
       // Sunrise/sunset transition
       const t = (sunHeight + 0.1) / 0.2; // 0 at -0.1, 1 at 0.1
-      // Warm sunrise/sunset colors
-      this.sunColor[0] = 1.0;
-      this.sunColor[1] = 0.5 + 0.42 * t;
-      this.sunColor[2] = 0.2 + 0.60 * t;
-      this.sunIntensity = 0.2 + 0.8 * t;
-      this.ambientColor[0] = 0.05 + 0.03 * t;
-      this.ambientColor[1] = 0.04 + 0.06 * t;
-      this.ambientColor[2] = 0.06 + 0.09 * t;
-      this.ambientGroundFactor = 0.15 + 0.15 * t;
+
+      // Sunset/sunrise colors (t=1) blending to moonlight colors (t=0)
+      // Sun color: warm orange-white at t=1 → cool blue moonlight at t=0
+      this.sunColor[0] = 0.35 + 0.65 * t;  // 0.35 → 1.0
+      this.sunColor[1] = 0.45 + 0.47 * t;  // 0.45 → 0.92
+      this.sunColor[2] = 0.70 + 0.10 * t;  // 0.70 → 0.80
+      // Intensity: sunset level at t=1, moonlight level at t=0
+      this.sunIntensity = 0.15 + 0.85 * t;  // 0.15 → 1.0
+
+      // Ambient: blends from night blue-tinted to sunset levels
+      this.ambientColor[0] = 0.03 + 0.05 * t;  // 0.03 → 0.08
+      this.ambientColor[1] = 0.04 + 0.06 * t;  // 0.04 → 0.10
+      this.ambientColor[2] = 0.08 + 0.07 * t;  // 0.08 → 0.15
+      this.ambientGroundFactor = 0.15 + 0.15 * t;  // 0.15 → 0.30
     } else {
-      // Night
-      this.sunColor[0] = 0.0;
-      this.sunColor[1] = 0.0;
-      this.sunColor[2] = 0.0;
-      this.sunIntensity = 0.0;
-      // Moonlight ambient
-      this.ambientColor[0] = 0.02;
-      this.ambientColor[1] = 0.025;
-      this.ambientColor[2] = 0.05;
-      this.ambientGroundFactor = 0.1;
+      // Night — use moonlight as directional light
+      // Flip sunDir to moon direction (opposite side of sky)
+      vec3.negate(this.sunDir, this.sunDir);
+
+      // Cool blue moonlight color and intensity (~12-15% of sunlight)
+      this.sunColor[0] = 0.35;
+      this.sunColor[1] = 0.45;
+      this.sunColor[2] = 0.70;
+      this.sunIntensity = 0.15;
+
+      // Moonlight ambient — blue-tinted, slightly raised
+      this.ambientColor[0] = 0.03;
+      this.ambientColor[1] = 0.04;
+      this.ambientColor[2] = 0.08;
+      this.ambientGroundFactor = 0.15;
     }
   }
 

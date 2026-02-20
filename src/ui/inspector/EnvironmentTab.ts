@@ -43,6 +43,7 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   dayNight.addElement(timeRow);
 
   dayNight.addField({ type: 'slider', label: 'Day Duration', configPath: 'environment.dayDurationSeconds', min: 60, max: 3600, step: 60 });
+
   // Cloud section
   const clouds = tab.addSection('Clouds');
   clouds.addField({ type: 'slider', label: 'Coverage', configPath: 'environment.cloud.coverage', min: 0, max: 1, step: 0.05 });
@@ -58,23 +59,50 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
     }
   });
 
-  // Auto-update time display
+  // Auto-update time display + weather UI sync
   (tab as any)._updateTime = () => {
     if (!dayNightCycle.paused) {
       timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
       timeVal.textContent = dayNightCycle.getTimeString();
     }
+    // Reverse sync: WeatherSystem → UI (for auto-weather changes)
+    weatherSelect.value = String(weatherSystem.currentWeather as number);
+    intSlider.value = String(weatherSystem.intensity);
+    intVal.textContent = weatherSystem.intensity.toFixed(2);
   };
 
   // Weather section
   const weather = tab.addSection('Weather');
+
+  // Auto Weather toggle
+  const autoRow = document.createElement('div');
+  autoRow.className = 'inspector-field';
+  const autoLabel = document.createElement('div');
+  autoLabel.className = 'inspector-field-label';
+  autoLabel.textContent = 'Auto';
+  const autoControl = document.createElement('div');
+  autoControl.className = 'inspector-field-control';
+  const autoCheck = document.createElement('input');
+  autoCheck.type = 'checkbox';
+  autoCheck.checked = weatherSystem.autoWeather;
+  autoCheck.addEventListener('change', () => {
+    weatherSystem.autoWeather = autoCheck.checked;
+    if (autoCheck.checked) {
+      weatherSystem.weatherTimer = 0;
+      weatherSystem.weatherDuration = 10 + Math.random() * 30;
+    }
+  });
+  autoControl.appendChild(autoCheck);
+  autoRow.appendChild(autoLabel);
+  autoRow.appendChild(autoControl);
+  weather.addElement(autoRow);
 
   // Weather type dropdown (direct control)
   const weatherRow = document.createElement('div');
   weatherRow.className = 'inspector-field';
   const weatherLabel = document.createElement('div');
   weatherLabel.className = 'inspector-field-label';
-  weatherLabel.textContent = 'Weather';
+  weatherLabel.textContent = 'Type';
   const weatherControl = document.createElement('div');
   weatherControl.className = 'inspector-field-control';
   const weatherSelect = document.createElement('select');
@@ -91,15 +119,17 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   }
 
   weatherSelect.addEventListener('change', () => {
+    weatherSystem.autoWeather = false;
+    autoCheck.checked = false;
     const type = parseInt(weatherSelect.value) as WeatherType;
     weatherSystem.currentWeather = type;
     if (type === WeatherType.CLEAR) {
       weatherSystem.targetIntensity = 0;
+      weatherSystem.intensity = 0;
     } else {
       weatherSystem.targetIntensity = 0.7;
+      weatherSystem.intensity = 0.7;
     }
-    weatherSystem.weatherTimer = 0;
-    weatherSystem.weatherDuration = 9999; // prevent auto-switch
   });
 
   weatherControl.appendChild(weatherSelect);
@@ -120,17 +150,18 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   intSlider.min = '0';
   intSlider.max = '1';
   intSlider.step = '0.05';
-  intSlider.value = String(weatherSystem.targetIntensity);
+  intSlider.value = String(weatherSystem.intensity);
   const intVal = document.createElement('span');
   intVal.className = 'val-display';
-  intVal.textContent = weatherSystem.targetIntensity.toFixed(2);
+  intVal.textContent = weatherSystem.intensity.toFixed(2);
 
   intSlider.addEventListener('input', () => {
+    weatherSystem.autoWeather = false;
+    autoCheck.checked = false;
     const v = parseFloat(intSlider.value);
     weatherSystem.targetIntensity = v;
+    weatherSystem.intensity = v;
     intVal.textContent = v.toFixed(2);
-    weatherSystem.weatherTimer = 0;
-    weatherSystem.weatherDuration = 9999;
   });
 
   intControl.appendChild(intSlider);
