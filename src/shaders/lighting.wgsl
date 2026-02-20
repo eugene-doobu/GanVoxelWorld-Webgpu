@@ -85,7 +85,9 @@ fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
   // Night darkening
   let dayFactor = smoothstep(-0.15, 0.1, trueSunHeight);
   fogColor *= dayFactor;
-  fogColor += vec3f(0.005, 0.007, 0.02) * (1.0 - dayFactor);
+  // Night fog: derive from ambient so fog never outshines ambient-lit objects
+  let nightFogColor = scene.ambientColor.rgb * 0.2;
+  fogColor += nightFogColor * (1.0 - dayFactor);
   return fogColor;
 }
 
@@ -356,10 +358,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let waterTime = scene.sunDir.w;
   if (worldPos.y < waterLevel) {
     let underwaterDepth = waterLevel - worldPos.y;
-    let depthAtten = exp(-underwaterDepth * 0.15);
+    let shoreFade = smoothstep(0.0, 0.5, underwaterDepth);
+    let depthAtten = exp(-underwaterDepth * 0.15) * shoreFade;
     let normalUp = max(dot(N, vec3f(0.0, 1.0, 0.0)), 0.0);
     let causticPattern = waterCaustics(worldPos, waterTime);
-    let causticLight = sunColor * causticPattern * depthAtten * normalUp * shadowFactor * 0.5;
+    let causticLight = sunColor * causticPattern * depthAtten * normalUp * shadowFactor * 0.35;
     finalColor += causticLight;
   }
 
