@@ -11,16 +11,12 @@ struct FragInput {
 fn main(input: FragInput) {
   let blockType = input.normalIndex >> 8u;
 
-  // Leaves cutout — texCoord-based hash (matches gbuffer.frag.wgsl)
+  // Leaves cutout — worldPos-based hash (matches gbuffer.frag.wgsl)
   if (blockType == 51u) {
-    let faceIdx = input.normalIndex & 0xFFu;
-    let tileUV = fract(input.texCoord * 16.0);
-    let cell = floor(tileUV * 4.0);
-    let bp = floor(input.worldPos);
-    let seed = cell.x * 12.9898 + cell.y * 78.233
-             + bp.x * 45.164 + bp.y * 93.72 + bp.z * 27.56
-             + f32(faceIdx) * 61.37;
-    let pattern = fract(sin(seed) * 43758.5453);
+    let wp = input.worldPos;
+    let h1 = fract(sin(dot(wp * 3.7, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
+    let h2 = fract(sin(dot(wp * 7.3, vec3f(269.5, 183.3, 246.1))) * 43758.5453);
+    let pattern = h1 * 0.6 + h2 * 0.4;
     if (pattern < 0.35) { discard; }
   }
 

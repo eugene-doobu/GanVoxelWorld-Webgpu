@@ -224,7 +224,7 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
 
         // Check 6 faces
         for (let face = 0; face < 6; face++) {
-          if (!shouldRenderFace(chunk, neighbors, x, y, z, face)) continue;
+          if (!shouldRenderFace(chunk, neighbors, x, y, z, face, blockType)) continue;
 
           const fv = FACE_VERTICES[face];
           const baseVertex = vertexCount;
@@ -400,7 +400,7 @@ function shouldRenderWaterFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x
   return !isBlockWater(neighbor) && !isBlockSolid(neighbor);
 }
 
-function shouldRenderFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x: number, y: number, z: number, face: number): boolean {
+function shouldRenderFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x: number, y: number, z: number, face: number, blockType: number): boolean {
   let nx = x, ny = y, nz = z;
   switch (face) {
     case 0: ny = y + 1; break; // TOP
@@ -412,6 +412,13 @@ function shouldRenderFace(chunk: Chunk, neighbors: ChunkNeighbors | null, x: num
   }
 
   const neighborBlock = getBlockAt(chunk, neighbors, nx, ny, nz);
+
+  // Cutout-cutout adjacency (e.g., leaf-leaf): only render from the positive
+  // direction side (even face) to prevent z-fighting on coplanar faces.
+  if (isBlockCutout(blockType) && isBlockCutout(neighborBlock)) {
+    return face % 2 === 0;
+  }
+
   // Render face if neighbor is not solid, or if neighbor is a cutout block (leaves)
   return !isBlockSolid(neighborBlock) || isBlockCutout(neighborBlock);
 }
