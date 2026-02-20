@@ -1,5 +1,5 @@
 // ======================== Water Fragment Shader ========================
-// Minimal: screen-space refraction + Beer's law depth color + fog
+// Beer's law depth color + Fresnel reflection + fog (no screen-space refraction)
 
 struct FragUniforms {
   cameraPos: vec3f,
@@ -32,10 +32,20 @@ fn linearizeDepth(d: f32) -> f32 {
   return near * far / (far - d * (far - near));
 }
 
+// Analytical derivative of vertex wave for consistent normals
+fn waterNormal(pos: vec3f, t: f32) -> vec3f {
+  let dhdx = cos(pos.x * 0.8 + t * 1.2) * 0.064
+           + cos((pos.x + pos.z) * 2.0 + t * 2.5) * 0.06
+           + cos((pos.x - pos.z) * 3.0 + t * 1.8) * 0.045;
+  let dhdz = cos(pos.z * 1.2 + t * 0.9) * 0.072
+           + cos((pos.x + pos.z) * 2.0 + t * 2.5) * 0.06
+           - cos((pos.x - pos.z) * 3.0 + t * 1.8) * 0.045;
+  return normalize(vec3f(-dhdx, 1.0, -dhdz));
+}
+
 @fragment
 fn main(input: FragInput) -> @location(0) vec4f {
   let pixelCoord = vec2i(input.position.xy);
-  let screenUV = input.position.xy / frag.screenSize;
 
   // ==================== Water Depth ====================
   let rawSceneDepth = textureLoad(sceneDepthTex, pixelCoord, 0);
@@ -43,15 +53,9 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let linearWater = linearizeDepth(input.position.z);
   let waterDepth = max(linearScene - linearWater, 0.0);
 
-  // ==================== Screen-Space Refraction ====================
-  let t = frag.time;
-  let distX = cos(input.worldPos.x * 1.2 + input.worldPos.z * 1.6 - t * 1.1) * 0.006
-            + cos(input.worldPos.x * 2.5 + input.worldPos.z * 3.8 + t * 2.0) * 0.003;
-  let distZ = cos(-input.worldPos.x * 1.5 + input.worldPos.z * 1.1 + t * 0.85) * 0.006
-            + cos(input.worldPos.x * 3.2 - input.worldPos.z * 2.3 - t * 1.6) * 0.003;
-  let distortion = vec2f(distX, distZ) * clamp(waterDepth, 0.0, 1.0);
-  let refractionUV = clamp(screenUV + distortion, vec2f(0.001), vec2f(0.999));
-  var color = textureSampleLevel(sceneColorTex, texSampler, refractionUV, 0.0).rgb;
+  // ==================== Water Normal & View ====================
+  let N = waterNormal(input.worldPos, frag.time);
+  let V = normalize(frag.cameraPos - input.worldPos);
 
   // ==================== Beer's Law Absorption ====================
   let absorbCoeff = vec3f(0.45, 0.08, 0.04);
@@ -61,7 +65,26 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let deepColor    = mix(vec3f(0.0, 0.01, 0.03), vec3f(0.0, 0.05, 0.18), dayFactor);
   let depthBlend = clamp(waterDepth / 6.0, 0.0, 1.0);
   let waterBaseColor = mix(shallowColor, deepColor, depthBlend);
-  color = color * transmittance + waterBaseColor * (1.0 - transmittance);
+  var color = waterBaseColor;
+
+  // ==================== Fresnel Reflection ====================
+  let NdotV = max(dot(N, V), 0.0);
+  let F0 = 0.02;
+  let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+
+  let R = reflect(-V, N);
+  let skyGradient = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+  let horizonColor = mix(vec3f(0.15, 0.18, 0.25), vec3f(0.35, 0.45, 0.6), dayFactor);
+  let zenithColor = mix(vec3f(0.03, 0.05, 0.12), vec3f(0.15, 0.3, 0.65), dayFactor);
+  let skyColor = mix(horizonColor, zenithColor, skyGradient);
+
+  // Sun specular
+  let L = normalize(frag.sunDirection);
+  let sunReflect = max(dot(R, L), 0.0);
+  let specular = frag.sunColor * frag.sunIntensity * (pow(sunReflect, 256.0) * 2.0 + pow(sunReflect, 32.0) * 0.15);
+
+  let reflection = skyColor + specular;
+  color = mix(color, reflection, clamp(fresnel, 0.0, 1.0));
 
   // ==================== Alpha ====================
   let alpha = clamp(waterDepth * 0.35 + 0.5, 0.5, 0.95);
