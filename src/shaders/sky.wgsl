@@ -274,6 +274,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let sunHeight = sunDir.y;
   let timeOfDay = scene.fogParams.z;
 
+  // True sun height from timeOfDay (immune to CPU sunDir negation at night)
+  let trueSunHeight = sin((timeOfDay - 0.25) * 2.0 * PI);
+  let dayFactor = smoothstep(-0.15, 0.1, trueSunHeight);
+  let nightFactor = 1.0 - dayFactor;
+
   // === Rayleigh scattering ===
   let rayleighCoeff = vec3<f32>(5.5e-6, 13.0e-6, 22.4e-6); // wavelength-dependent
   let rayleigh = rayleighPhase(cosTheta);
@@ -306,10 +311,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   skyColor += rayleighColor * 0.8 + mieColor;
 
   // === Horizon warming (sunset/sunrise tint) ===
-  let sunsetFactor = 1.0 - clamp(abs(sunHeight) * 3.0, 0.0, 1.0);
+  let sunsetFactor = 1.0 - clamp(abs(trueSunHeight) * 3.0, 0.0, 1.0);
   let horizonWarm = vec3<f32>(1.2, 0.5, 0.15) * sunsetFactor * max(cosTheta, 0.0) * 0.5;
   let horizonBand = exp(-abs(up) * 8.0);
   skyColor += horizonWarm * horizonBand;
+
+  // Dim day sky toward night
+  skyColor *= dayFactor;
 
   // === Voxel Sun (square) ===
   // Project ray onto sun-local tangent plane for square shape
@@ -320,29 +328,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let sunDist = max(abs(sunLocalX), abs(sunLocalY)); // Chebyshev → square
   let sunSize = 0.038;
 
-  if (sunDist < sunSize && cosTheta > 0.9 && sunHeight > -0.05) {
+  if (sunDist < sunSize && cosTheta > 0.9 && dayFactor > 0.01) {
     let edge = smoothstep(sunSize, sunSize * 0.85, sunDist);
-    let sunDiscColor = vec3<f32>(10.0, 8.0, 5.0); // HDR sun
+    let sunDiscColor = vec3<f32>(10.0, 8.0, 5.0) * dayFactor;
     skyColor = mix(skyColor, sunDiscColor, edge);
   }
 
   // Sun glow (round, soft)
   let glowRadius = 0.97;
-  if (cosTheta > glowRadius && sunHeight > -0.05) {
+  if (cosTheta > glowRadius && dayFactor > 0.01) {
     let t = (cosTheta - glowRadius) / (1.0 - glowRadius);
-    let glowStr = t * t * 0.6 * max(sunHeight + 0.1, 0.0);
+    let glowStr = t * t * 0.6 * max(trueSunHeight + 0.1, 0.0);
     let glowColor = mix(vec3<f32>(1.2, 0.6, 0.2), vec3<f32>(1.5, 1.3, 0.9), clamp(sunHeight * 3.0, 0.0, 1.0));
     skyColor += glowColor * glowStr;
   }
 
   // === Volumetric clouds ===
-  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, sunDir, scene.sunColor.xyz, timeOfDay);
-  skyColor = mix(skyColor, cloud.rgb, cloud.a);
+  let elapsedTime = scene.sunDir.w;  // accumulated seconds
+  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, sunDir, scene.sunColor.xyz, elapsedTime);
+  let cloudBrightness = max(dayFactor, 0.03);
+  skyColor = mix(skyColor, cloud.rgb * cloudBrightness, cloud.a);
 
-  // === Night sky ===
-  let nightFactor = clamp(-sunHeight * 4.0 - 0.2, 0.0, 1.0);
-  if (nightFactor > 0.0) {
-    var nightSky = vec3<f32>(0.005, 0.007, 0.02);
+  // === Night sky (additive — base sky already dimmed by dayFactor) ===
+  if (nightFactor > 0.01) {
+    // Dark blue base
+    skyColor += vec3f(0.005, 0.007, 0.02) * nightFactor;
 
     // Stars
     if (up > 0.0) {
@@ -351,12 +361,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       if (starHash > 0.985) {
         let brightness = (starHash - 0.985) / 0.015;
         let twinkle = sin(timeOfDay * 6.28 * 50.0 + starHash * 100.0) * 0.3 + 0.7;
-        nightSky += vec3<f32>(brightness * twinkle * 2.0);
+        skyColor += vec3f(brightness * twinkle * 2.0) * nightFactor;
       }
     }
 
-    // Voxel Moon (square, opposite to sun)
-    let moonDir = -sunDir;
+    // Voxel Moon (sunDir = moon direction at night, CPU already negated)
+    let moonDir = sunDir;
     let moonDot = dot(rayDir, moonDir);
     let moonRight = normalize(cross(moonDir, vec3<f32>(0.0, 1.0, 0.001)));
     let moonUp = normalize(cross(moonRight, moonDir));
@@ -368,16 +378,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (moonDist < moonSize && moonDot > 0.9) {
       let edge = smoothstep(moonSize, moonSize * 0.85, moonDist);
       let moonColor = vec3<f32>(0.8, 0.85, 1.0);
-      nightSky += moonColor * edge * 2.0;
+      skyColor += moonColor * edge * 2.0 * nightFactor;
     }
 
     // Moon glow (round, soft)
     if (moonDot > 0.995) {
       let t = (moonDot - 0.995) / 0.005;
-      nightSky += vec3<f32>(0.1, 0.12, 0.2) * t * t;
+      skyColor += vec3<f32>(0.1, 0.12, 0.2) * t * t * nightFactor;
     }
-
-    skyColor = mix(skyColor, nightSky, nightFactor);
   }
 
   return vec4<f32>(skyColor, 1.0);

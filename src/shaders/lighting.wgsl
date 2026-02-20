@@ -66,8 +66,10 @@ fn hgPhase(cosTheta: f32, g: f32) -> f32 {
   return num / denom;
 }
 
-fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, sunHeight: f32) -> vec3f {
+fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
   let cosTheta = dot(normalize(viewDir), sunDir);
+  // True sun height (immune to CPU sunDir negation at night)
+  let trueSunHeight = sin((timeOfDay - 0.25) * 2.0 * PI);
   // Rayleigh (blue sky)
   let rayleigh = rayleighPhase(cosTheta);
   let rayleighColor = vec3f(0.3, 0.55, 0.95) * rayleigh;
@@ -77,11 +79,12 @@ fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, sunHeight: f32) -> vec3f {
   // Horizon base + scattering
   var fogColor = vec3f(0.60, 0.75, 0.92) + rayleighColor * 0.8 + mieColor;
   // Sunset warming
-  let sunsetFactor = 1.0 - clamp(abs(sunHeight) * 3.0, 0.0, 1.0);
+  let sunsetFactor = 1.0 - clamp(abs(trueSunHeight) * 3.0, 0.0, 1.0);
   fogColor += vec3f(1.2, 0.5, 0.15) * sunsetFactor * max(cosTheta, 0.0) * 0.5;
   // Night darkening
-  let nightFactor = clamp(-sunHeight * 4.0 - 0.2, 0.0, 1.0);
-  fogColor = mix(fogColor, vec3f(0.005, 0.007, 0.02), nightFactor);
+  let dayFactor = smoothstep(-0.15, 0.1, trueSunHeight);
+  fogColor *= dayFactor;
+  fogColor += vec3f(0.005, 0.007, 0.02) * (1.0 - dayFactor);
   return fogColor;
 }
 
@@ -365,7 +368,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
   let viewDir = worldPos - scene.cameraPos.xyz;
   let sunDir3 = normalize(scene.sunDir.xyz);
-  let fogColor = atmosphericFogColor(viewDir, sunDir3, sunDir3.y);
+  let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
   finalColor = mix(finalColor, fogColor, fogFactor);
 
   return vec4<f32>(finalColor, 1.0);
