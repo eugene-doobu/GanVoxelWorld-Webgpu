@@ -342,7 +342,7 @@ export class TAA {
 
   swapHistory(): void {
     this.pingPong = 1 - this.pingPong;
-    this.frameIndex++;
+    this.frameIndex = (this.frameIndex + 1) % 256;
   }
 
   storePrevViewProj(viewProj: mat4): void {

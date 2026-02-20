@@ -3,8 +3,8 @@
 
 struct VolumetricUniforms {
   invViewProj: mat4x4<f32>,       // 64
-  cameraPos: vec4<f32>,           // 16  (xyz=position)
-  sunDir: vec4<f32>,              // 16  (xyz=direction)
+  cameraPos: vec4<f32>,           // 16  (xyz=position, w=seaLevel)
+  sunDir: vec4<f32>,              // 16  (xyz=direction, w=frameIndex)
   sunColor: vec4<f32>,            // 16  (rgb=color, w=intensity)
   params: vec4<f32>,              // 16  (x=density, y=scatterG, z=maxDist, w=numSteps)
 };
@@ -115,16 +115,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Accumulate scattered light via ray marching
   var scatteredLight = 0.0;
-  // Dithered start offset to reduce banding
-  let ditherPattern = fract(dot(input.position.xy, vec2<f32>(0.7548776662, 0.56984029)));
+  // Temporal dithered start offset to reduce banding
+  let frameIndex = uniforms.sunDir.w;
+  let ditherPattern = fract(dot(input.position.xy, vec2<f32>(0.7548776662, 0.56984029)) + fract(frameIndex * 0.7548));
   let startOffset = ditherPattern * stepSize;
 
   for (var i = 0; i < numSteps; i++) {
     let t = startOffset + f32(i) * stepSize;
     let samplePos = camPos + rayDirNorm * t;
 
-    // Height-based density falloff (fog is denser near ground)
-    let heightFactor = exp(-max(samplePos.y - 50.0, 0.0) * 0.02);
+    // Height-based density falloff (fog is denser near sea level)
+    let seaLevel = uniforms.cameraPos.w;
+    let heightFactor = exp(-max(samplePos.y - seaLevel, 0.0) * 0.02);
 
     let shadowVal = sampleShadowAt(samplePos);
     scatteredLight += shadowVal * heightFactor;

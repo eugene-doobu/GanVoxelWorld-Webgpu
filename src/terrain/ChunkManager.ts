@@ -116,17 +116,20 @@ export class ChunkManager {
     // Process N chunks per frame
     const chunksPerFrame = Config.data.rendering.general.chunksPerFrame;
     let processed = 0;
+    const generatedThisFrame = new Set<string>();
+    const neighborsToRebuild = new Set<string>();
+
     while (this.loadQueue.length > 0 && processed < chunksPerFrame) {
       const { cx, cz } = this.loadQueue.shift()!;
       const key = chunkKey(cx, cz);
       const entry = this.chunks.get(key);
       if (!entry || entry.state !== ChunkState.QUEUED) continue;
 
-      // Generate terrain
+      // Generate terrain (ores before caves so caves expose ores on walls)
       entry.state = ChunkState.GENERATING;
       this.terrainGen.generate(entry.chunk);
-      this.caveGen.generate(entry.chunk);
       this.oreGen.generate(entry.chunk);
+      this.caveGen.generate(entry.chunk);
       this.treeGen.generate(entry.chunk);
       this.vegGen.generate(entry.chunk);
       this.waterSim.generate(entry.chunk);
@@ -159,12 +162,22 @@ export class ChunkManager {
 
       entry.state = ChunkState.READY;
       processed++;
+      generatedThisFrame.add(key);
 
-      // Rebuild neighbor meshes if they exist (boundary fix)
-      this.rebuildNeighborIfReady(cx - 1, cz);
-      this.rebuildNeighborIfReady(cx + 1, cz);
-      this.rebuildNeighborIfReady(cx, cz - 1);
-      this.rebuildNeighborIfReady(cx, cz + 1);
+      // Collect neighbor chunks that need rebuilding (deduplicate via Set)
+      neighborsToRebuild.add(chunkKey(cx - 1, cz));
+      neighborsToRebuild.add(chunkKey(cx + 1, cz));
+      neighborsToRebuild.add(chunkKey(cx, cz - 1));
+      neighborsToRebuild.add(chunkKey(cx, cz + 1));
+    }
+
+    // Rebuild collected neighbors once each, skipping chunks generated this frame
+    for (const nKey of neighborsToRebuild) {
+      if (generatedThisFrame.has(nKey)) continue;
+      const entry = this.chunks.get(nKey);
+      if (!entry || entry.state !== ChunkState.READY) continue;
+      const [ncx, ncz] = nKey.split(',').map(Number);
+      this.rebuildNeighborIfReady(ncx, ncz);
     }
 
     // Unload distant chunks

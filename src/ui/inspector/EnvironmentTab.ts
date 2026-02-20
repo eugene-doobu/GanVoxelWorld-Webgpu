@@ -3,8 +3,17 @@ import { Config } from '../../config/Config';
 import { DayNightCycle } from '../../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../../world/WeatherSystem';
 
-export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem: WeatherSystem): InspectorTab {
-  const tab = new InspectorTab();
+export class EnvironmentTab extends InspectorTab {
+  /** @internal Set by buildEnvironmentTab */
+  _updateTimeFn: (() => void) | null = null;
+
+  updateTime(): void {
+    if (this._updateTimeFn) this._updateTimeFn();
+  }
+}
+
+export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem: WeatherSystem): EnvironmentTab {
+  const tab = new EnvironmentTab();
 
   // Day/Night section
   const dayNight = tab.addSection('Day / Night');
@@ -60,7 +69,7 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   });
 
   // Auto-update time display + weather UI sync
-  (tab as any)._updateTime = () => {
+  tab._updateTimeFn = () => {
     if (!dayNightCycle.paused) {
       timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
       timeVal.textContent = dayNightCycle.getTimeString();

@@ -40,7 +40,7 @@ export class TerrainGenerator {
     let height = Math.floor(baseHeight + (heightVariation - 0.5) * 10);
     height = Math.max(1, Math.min(CHUNK_HEIGHT - 1, height));
 
-    const biome = this.getBiome(worldX, worldZ, height);
+    const biome = this.getBiome(worldX, worldZ, height, continentalness);
 
     for (let y = 0; y < CHUNK_HEIGHT; y++) {
       chunk.setBlock(localX, y, localZ, this.getBlockType(y, height, biome));
@@ -67,8 +67,10 @@ export class TerrainGenerator {
     }
   }
 
-  getBiome(worldX: number, worldZ: number, surfaceHeight: number): BiomeType {
-    const continentalness = this.continentalnessNoise.sample(worldX, worldZ);
+  getBiome(worldX: number, worldZ: number, surfaceHeight: number, continentalness?: number): BiomeType {
+    if (continentalness === undefined) {
+      continentalness = this.continentalnessNoise.sample(worldX, worldZ);
+    }
 
     // Force ocean when continentalness is below threshold
     if (continentalness < Config.data.terrain.biomes.oceanThreshold) {

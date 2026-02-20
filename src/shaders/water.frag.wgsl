@@ -74,8 +74,8 @@ fn main(input: FragInput) -> @location(0) vec4f {
 
   let R = reflect(-V, N);
   let skyGradient = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
-  let horizonColor = mix(vec3f(0.15, 0.18, 0.25), vec3f(0.35, 0.45, 0.6), dayFactor);
-  let zenithColor = mix(vec3f(0.03, 0.05, 0.12), vec3f(0.15, 0.3, 0.65), dayFactor);
+  let horizonColor = mix(vec3f(0.015, 0.02, 0.035), vec3f(0.35, 0.45, 0.6), dayFactor);
+  let zenithColor = mix(vec3f(0.005, 0.008, 0.025), vec3f(0.15, 0.3, 0.65), dayFactor);
   let skyColor = mix(horizonColor, zenithColor, skyGradient);
 
   // Sun specular

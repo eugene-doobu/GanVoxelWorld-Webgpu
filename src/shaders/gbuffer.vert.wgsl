@@ -33,7 +33,7 @@ fn main(input: VertexInput) -> VertexOutput {
 
   // Leaves wind animation (BlockType.LEAVES = 51)
   if (blockType == 51u) {
-    let windTime = camera.time.x;
+    let windTime = camera.time.x % 628.318; // wrap to avoid sin() precision loss
     let windStrength = 0.03;
     let freq1 = worldPos.x * 0.8 + worldPos.z * 0.4 + windTime * 1.2;
     let freq2 = worldPos.x * 0.5 + worldPos.z * 0.7 + windTime * 0.9;
@@ -44,7 +44,7 @@ fn main(input: VertexInput) -> VertexOutput {
 
   // Vegetation wind animation (TALL_GRASS=80, POPPY=81, DANDELION=82)
   if (blockType >= 80u && blockType <= 82u) {
-    let windTime = camera.time.x;
+    let windTime = camera.time.x % 628.318; // wrap to avoid sin() precision loss
     // Use original Y for height factor (stable, pre-wind)
     let heightFactor = fract(input.position.y); // ~0.01 at bottom, ~0.99 at top
     let windStrength = 0.12 * heightFactor;

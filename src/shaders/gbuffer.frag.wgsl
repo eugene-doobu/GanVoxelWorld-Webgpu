@@ -68,9 +68,10 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
 
   var worldNormal: vec3<f32>;
   if (blockType >= 80u && blockType <= 82u) {
-    // Vegetation: use UP normal directly (TBN is meaningless for cross-mesh)
-    // front_facing handles two-sided lighting
-    worldNormal = vec3f(0.0, 1.0, 0.0);
+    // Vegetation: use face normal from geometry, oriented toward camera
+    // For cross-mesh (X-shaped quads), the geometric normal is meaningful
+    // and we negate it for back faces so both sides shade consistently
+    worldNormal = FACE_NORMALS[idx];
     if (!frontFacing) { worldNormal = -worldNormal; }
   } else {
     // Solid blocks: transform tangent-space normal via TBN

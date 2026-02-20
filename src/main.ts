@@ -75,6 +75,13 @@ async function main() {
   const envTab = buildEnvironmentTab(dayNightCycle, weatherSystem);
   inspector.addTab('Environment', envTab);
 
+  // H key toggles HUD (skip when typing in inputs or inspector is focused)
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyH' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement)) {
+      hud.toggle();
+    }
+  });
+
   // Reactive config: apply rendering changes immediately
   Config.onChange((path) => {
     if (path === 'rendering.general.renderDistance') {
@@ -104,7 +111,7 @@ async function main() {
     weatherSystem.update(dt);
 
     // Update environment tab time display
-    if ((envTab as any)._updateTime) (envTab as any)._updateTime();
+    envTab.updateTime();
 
     const viewProj = camera.getViewProjection(ctx.aspectRatio);
     const projection = camera.getProjection();

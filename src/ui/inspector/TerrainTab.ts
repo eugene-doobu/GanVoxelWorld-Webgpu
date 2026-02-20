@@ -1,8 +1,12 @@
 import { InspectorTab } from './InspectorTab';
 import { Config } from '../../config/Config';
 
-export function buildTerrainTab(onRegenerate: (seed: number) => void): InspectorTab {
-  const tab = new InspectorTab();
+export class TerrainTab extends InspectorTab {
+  seedInput: HTMLInputElement | null = null;
+}
+
+export function buildTerrainTab(onRegenerate: (seed: number) => void): TerrainTab {
+  const tab = new TerrainTab();
 
   // Noise section
   const noise = tab.addSection('Noise');
@@ -87,7 +91,7 @@ export function buildTerrainTab(onRegenerate: (seed: number) => void): Inspector
   });
 
   // Expose seed input for external access
-  (tab as any).seedInput = seedInput;
+  tab.seedInput = seedInput;
 
   return tab;
 }

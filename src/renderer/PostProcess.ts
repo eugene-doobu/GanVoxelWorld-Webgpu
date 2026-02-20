@@ -628,17 +628,19 @@ export class PostProcess {
     sunDir: Float32Array,
     sunColor: Float32Array,
     sunIntensity: number,
+    seaLevel: number,
+    frameIndex: number,
   ): void {
     const f = this.volumetricF32;
     f.set(invViewProj, 0);                     // invViewProj mat4
     f[16] = cameraPos[0];                      // cameraPos
     f[17] = cameraPos[1];
     f[18] = cameraPos[2];
-    f[19] = 0;
+    f[19] = seaLevel;                          // cameraPos.w = seaLevel
     f[20] = sunDir[0];                         // sunDir
     f[21] = sunDir[1];
     f[22] = sunDir[2];
-    f[23] = 0;
+    f[23] = frameIndex;                        // sunDir.w = frameIndex (temporal dither)
     f[24] = sunColor[0];                       // sunColor
     f[25] = sunColor[1];
     f[26] = sunColor[2];

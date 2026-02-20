@@ -47,10 +47,9 @@ fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
   let warmth = mix(vec3f(0.85, 0.9, 1.2), vec3f(1.05, 1.02, 0.95), dayFactor);
   c *= warmth;
 
-  // 2. Sunrise/sunset golden hour tint
-  let sunriseFactor = exp(-pow((timeOfDay - 0.25) * 12.0, 2.0));
-  let sunsetFactor = exp(-pow((timeOfDay - 0.75) * 12.0, 2.0));
-  let goldenHour = sunriseFactor + sunsetFactor;
+  // 2. Sunrise/sunset golden hour tint (derived from sun height for accuracy)
+  let sunHeight = sin((timeOfDay - 0.25) * 2.0 * 3.14159265359);
+  let goldenHour = smoothstep(0.0, 0.15, sunHeight) * smoothstep(0.3, 0.15, sunHeight);
   c = mix(c, c * vec3f(1.15, 0.95, 0.8), goldenHour * 0.4);
 
   // 3. Vibrance with scotopic effect (reduced saturation at night)
@@ -84,7 +83,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Night exposure boost: raise exposure at night so moonlit scenes have adequate brightness
   let nightFactor = 1.0 - smoothstep(0.2, 0.3, params.timeOfDay) * (1.0 - smoothstep(0.7, 0.8, params.timeOfDay));
-  let nightExposureBoost = mix(1.0, 1.8, nightFactor);
+  let nightExposureBoost = mix(1.0, 1.4, nightFactor);
   color *= exposure * nightExposureBoost;
 
   // ACES tone mapping

@@ -129,6 +129,9 @@ export class DeferredPipeline {
   // Delta time cached for auto exposure
   private cachedDt = 0;
 
+  // Frame counter for temporal dithering
+  private frameIndex = 0;
+
   constructor(ctx: WebGPUContext, private dayNightCycle: DayNightCycle) {
     this.ctx = ctx;
 
@@ -698,12 +701,15 @@ export class DeferredPipeline {
     );
 
     // Update volumetric uniforms
+    this.frameIndex++;
     this.postProcess.updateVolumetric(
       this.invVP as Float32Array,
       cameraPos,
       new Float32Array([dnc.sunDir[0], dnc.sunDir[1], dnc.sunDir[2]]),
       new Float32Array([dnc.sunColor[0], dnc.sunColor[1], dnc.sunColor[2]]),
       dnc.sunIntensity,
+      Config.data.terrain.height.seaLevel,
+      this.frameIndex,
     );
 
     // Update SSR uniforms (use unjittered viewProj for stable reflections)
@@ -1112,9 +1118,11 @@ export class DeferredPipeline {
 
     // Night darkening
     const nightFactor = Math.min(1, Math.max(0, -sunHeight * 4 - 0.2));
-    fr = fr * (1 - nightFactor) + 0.005 * nightFactor;
-    fg = fg * (1 - nightFactor) + 0.007 * nightFactor;
-    fb = fb * (1 - nightFactor) + 0.02 * nightFactor;
+    // Night fog: derive from ambient so fog never outshines ambient-lit objects
+    const amb = dnc.ambientColor;
+    fr = fr * (1 - nightFactor) + amb[0] * 0.2 * nightFactor;
+    fg = fg * (1 - nightFactor) + amb[1] * 0.2 * nightFactor;
+    fb = fb * (1 - nightFactor) + amb[2] * 0.2 * nightFactor;
 
     return [fr, fg, fb];
   }

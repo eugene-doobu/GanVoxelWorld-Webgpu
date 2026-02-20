@@ -173,13 +173,34 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
   current[keys[keys.length - 1]] = value;
 }
 
+const STORAGE_KEY = 'voxelEngineConfig';
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const key of Object.keys(source)) {
+    const sv = source[key];
+    const tv = target[key];
+    if (sv != null && typeof sv === 'object' && !Array.isArray(sv) &&
+        tv != null && typeof tv === 'object' && !Array.isArray(tv)) {
+      deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
+    } else {
+      target[key] = sv;
+    }
+  }
+}
+
 class ConfigManager {
   data: AppConfig;
   private handlers: ChangeHandler[] = [];
   private dirtyGroups = new Set<ConfigGroup>();
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    this.data = {
+    this.data = this.getDefaults();
+    this.loadFromStorage();
+  }
+
+  private getDefaults(): AppConfig {
+    return {
       terrain: {
         noise: { octaves: 4, persistence: 0.5, lacunarity: 2.0, scale: 50.0 },
         height: { seaLevel: 50, minHeight: 1, maxHeight: 100, dirtLayerDepth: 4 },
@@ -208,7 +229,7 @@ class ConfigManager {
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },
         fog: { startRatio: 0.85, endRatio: 1.15 },
-        contactShadows: { enabled: true, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
+        contactShadows: { enabled: false, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
         taa: { enabled: true, blendFactor: 0.9 },
         autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.18, minExposure: 0.1, maxExposure: 5.0 },
       },
@@ -230,17 +251,57 @@ class ConfigManager {
     };
   }
 
+  private loadFromStorage(): void {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved && typeof saved === 'object') {
+          deepMerge(this.data as unknown as Record<string, unknown>, saved);
+        }
+      }
+    } catch {
+      // Corrupted data — fall back to defaults
+    }
+  }
+
+  private scheduleSave(): void {
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      } catch {
+        // Storage full or unavailable — ignore
+      }
+      this.saveTimer = null;
+    }, 500);
+  }
+
   get(path: string): unknown {
     return getNestedValue(this.data as unknown as Record<string, unknown>, path);
   }
 
   set(path: string, value: unknown): void {
+    // Validate type matches existing value
+    const existing = this.get(path);
+    if (existing !== undefined) {
+      if (typeof existing === 'number' && (typeof value !== 'number' || Number.isNaN(value as number))) {
+        console.warn(`[Config] Rejected set("${path}", ${value}): expected number`);
+        return;
+      }
+      if (typeof existing === 'boolean' && typeof value !== 'boolean') {
+        console.warn(`[Config] Rejected set("${path}", ${value}): expected boolean`);
+        return;
+      }
+    }
+
     setNestedValue(this.data as unknown as Record<string, unknown>, path, value);
     const group = path.split('.')[0] as ConfigGroup;
     this.dirtyGroups.add(group);
     for (const handler of this.handlers) {
       handler(path, value);
     }
+    this.scheduleSave();
   }
 
   onChange(handler: ChangeHandler): void {
@@ -258,6 +319,14 @@ class ConfigManager {
 
   clearDirty(group: ConfigGroup): void {
     this.dirtyGroups.delete(group);
+  }
+
+  resetToDefaults(): void {
+    this.data = this.getDefaults();
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+    for (const handler of this.handlers) {
+      handler('*', undefined);
+    }
   }
 }
 

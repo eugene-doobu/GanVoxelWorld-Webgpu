@@ -7,10 +7,16 @@ export class HUD {
   private fps = 0;
   private lastError = '';
   private drawInfo = '';
+  visible = true;
 
   constructor() {
     this.el = document.getElementById('hud');
     this.lastFpsTime = performance.now();
+  }
+
+  toggle(): void {
+    this.visible = !this.visible;
+    if (this.el) this.el.style.display = this.visible ? '' : 'none';
   }
 
   setError(msg: string): void {
