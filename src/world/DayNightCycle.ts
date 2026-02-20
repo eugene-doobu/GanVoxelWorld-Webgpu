@@ -12,20 +12,42 @@ export class DayNightCycle {
   ambientColor = new Float32Array([0.10, 0.13, 0.18]);
   ambientGroundFactor = 0.3;
 
+  // Moon phase system (8-day lunar cycle)
+  moonPhase = 0.5;        // 0.0=new moon, 0.5=full moon
+  moonBrightness = 1.0;   // derived from moonPhase: 0→1
+  private dayCount = 4;   // elapsed days (start at 4 → moonPhase=0.5=full moon)
+  private prevTimeOfDay = 0.35;
+
   update(dt: number): void {
     if (!this.paused) {
+      const prev = this.timeOfDay;
       this.timeOfDay += dt / Config.data.environment.dayDurationSeconds;
       this.timeOfDay -= Math.floor(this.timeOfDay);
+      // Detect midnight crossing (prev > 0.9, now < 0.1)
+      if (prev > 0.9 && this.timeOfDay < 0.1) {
+        this.dayCount++;
+      }
+      this.prevTimeOfDay = this.timeOfDay;
     }
+    this.updateMoonPhase();
     this.updateSunPosition();
     this.updateLighting();
   }
 
   setTime(t: number): void {
-    this.timeOfDay = t - Math.floor(t);
+    this.dayCount = Math.floor(t);
+    this.timeOfDay = t - this.dayCount;
+    this.prevTimeOfDay = this.timeOfDay;
     this.paused = true;
+    this.updateMoonPhase();
     this.updateSunPosition();
     this.updateLighting();
+  }
+
+  private updateMoonPhase(): void {
+    this.moonPhase = (this.dayCount % 8) / 8.0;
+    // cosine ramp: new moon(0)=0, full moon(0.5)=1
+    this.moonBrightness = 0.5 * (1.0 - Math.cos(this.moonPhase * Math.PI * 2.0));
   }
 
   private updateSunPosition(): void {
@@ -76,17 +98,18 @@ export class DayNightCycle {
       // Flip sunDir to moon direction (opposite side of sky)
       vec3.negate(this.sunDir, this.sunDir);
 
-      // Cool blue moonlight color and intensity (~12-15% of sunlight)
+      // Cool blue moonlight color, intensity varies with moon phase
       this.sunColor[0] = 0.35;
       this.sunColor[1] = 0.45;
       this.sunColor[2] = 0.70;
-      this.sunIntensity = 0.15;
+      this.sunIntensity = 0.03 + 0.12 * this.moonBrightness; // 0.03 (new moon) ~ 0.15 (full moon)
 
-      // Moonlight ambient — blue-tinted, slightly raised
-      this.ambientColor[0] = 0.03;
-      this.ambientColor[1] = 0.04;
-      this.ambientColor[2] = 0.08;
-      this.ambientGroundFactor = 0.15;
+      // Moonlight ambient — blue-tinted, moon phase dependent
+      const mb = this.moonBrightness;
+      this.ambientColor[0] = 0.015 + 0.015 * mb;
+      this.ambientColor[1] = 0.02 + 0.02 * mb;
+      this.ambientColor[2] = 0.05 + 0.03 * mb;
+      this.ambientGroundFactor = 0.10 + 0.05 * mb;
     }
   }
 

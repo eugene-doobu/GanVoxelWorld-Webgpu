@@ -26,8 +26,8 @@ import waterVertShader from '../shaders/water.vert.wgsl?raw';
 import waterFragShader from '../shaders/water.frag.wgsl?raw';
 import weatherShader from '../shaders/weather.wgsl?raw';
 
-// SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) + cloudParams(16) + viewProj(64) + contactShadowParams(16) = 240 bytes
-const SCENE_UNIFORM_SIZE = 240;
+// SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) + cloudParams(16) + viewProj(64) + contactShadowParams(16) + skyNightParams(16) = 256 bytes
+const SCENE_UNIFORM_SIZE = 256;
 // Camera uniform for G-Buffer pass: viewProj(64) + cameraPos(16) + fogParams(16) + time(4) + pad(12) = 112 bytes
 const CAMERA_UNIFORM_SIZE = 112;
 
@@ -408,6 +408,13 @@ export class DeferredPipeline {
     const waterVertModule = device.createShaderModule({ code: waterVertShader });
     const waterFragModule = device.createShaderModule({ code: waterFragShader });
 
+    waterVertModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[water.vert] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
+    waterFragModule.getCompilationInfo().then(info => {
+      for (const msg of info.messages) console.warn(`[water.frag] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
+    });
+
     this.waterPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.waterBindGroupLayout] }),
       vertex: {
@@ -670,6 +677,11 @@ export class DeferredPipeline {
     sceneF32[57] = cs.maxSteps;
     sceneF32[58] = cs.rayLength;
     sceneF32[59] = cs.thickness;
+    // skyNightParams at offset 60 (bytes 240-255)
+    sceneF32[60] = dnc.moonPhase;       // skyNightParams.x
+    sceneF32[61] = dnc.moonBrightness;  // skyNightParams.y
+    sceneF32[62] = this.waterTime;      // skyNightParams.z (elapsedTime for star twinkle)
+    sceneF32[63] = 0.0;                 // skyNightParams.w (reserved)
     this.ctx.device.queue.writeBuffer(this.sceneUniformBuffer, 0, sceneF32);
 
     // Update shadow matrices

@@ -11,6 +11,7 @@ struct SceneUniforms {
   cloudParams: vec4<f32>,          // 16  (x=baseNoiseScale, y=extinction, z=multiScatterFloor, w=detailStrength)
   viewProj: mat4x4<f32>,          // 64  (unjittered viewProj for contact shadow)
   contactShadowParams: vec4<f32>,  // 16  (x=enabled, y=maxSteps, z=rayLength, w=thickness)
+  skyNightParams: vec4<f32>,       // 16  (x=moonPhase, y=moonBrightness, z=elapsedTime, w=reserved)
 };
 
 struct ShadowUniforms {

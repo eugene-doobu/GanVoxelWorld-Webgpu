@@ -11,6 +11,7 @@ struct SceneUniforms {
   cloudParams: vec4<f32>,          // x = baseNoiseScale, y = extinction, z = multiScatterFloor, w = detailStrength
   viewProj: mat4x4<f32>,          // unused in sky, layout must match lighting
   contactShadowParams: vec4<f32>,  // unused in sky, layout must match lighting
+  skyNightParams: vec4<f32>,       // x=moonPhase, y=moonBrightness, z=elapsedTime, w=reserved
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -51,6 +52,124 @@ fn hash(p: vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
   p3 += dot(p3, vec3<f32>(p3.y + 33.33, p3.z + 33.33, p3.x + 33.33));
   return fract((p3.x + p3.y) * p3.z);
+}
+
+// hash returning vec2 for star field randomization
+fn hash2(p: vec2<f32>) -> vec2<f32> {
+  var p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract(vec2<f32>((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y));
+}
+
+// Star color temperature (spectral type)
+fn starColor(h: f32) -> vec3<f32> {
+  if (h < 0.15) { return vec3<f32>(0.7, 0.8, 1.0); }       // blue-white (B/A)
+  else if (h < 0.60) { return vec3<f32>(1.0, 1.0, 0.95); }  // white (F/G)
+  else if (h < 0.85) { return vec3<f32>(1.0, 0.9, 0.7); }   // yellow-white (G/K)
+  else { return vec3<f32>(1.0, 0.75, 0.5); }                 // orange (K/M)
+}
+
+// Multi-layer star field with color temperature and twinkling
+fn sampleStarField(rayDir: vec3<f32>, elapsedTime: f32) -> vec3<f32> {
+  // Spherical coordinates for uniform distribution
+  let theta = atan2(rayDir.z, rayDir.x); // azimuth
+  let phi = asin(clamp(rayDir.y, -1.0, 1.0));   // elevation
+
+  var stars = vec3<f32>(0.0);
+
+  // Layer 1: bright stars (large cells, ~3% density)
+  let scale1 = 80.0;
+  let uv1 = vec2<f32>(theta * scale1 / PI, phi * scale1 / (PI * 0.5));
+  let cell1 = floor(uv1);
+  let h1 = hash2(cell1);
+  let offset1 = h1 - 0.5; // random offset within cell
+  let cellCenter1 = cell1 + 0.5 + offset1 * 0.8;
+  let dist1 = length(uv1 - cellCenter1);
+  let brightness1 = hash(cell1 + vec2<f32>(7.31, 3.17));
+  if (brightness1 > 0.97) {
+    let falloff1 = exp(-dist1 * dist1 * 80.0);
+    let colorHash1 = hash(cell1 + vec2<f32>(13.7, 29.3));
+    let col1 = starColor(colorHash1);
+    let twinkle1 = sin(elapsedTime * 1.5 + brightness1 * 100.0) * 0.3 + 0.7;
+    let intensity1 = (brightness1 - 0.97) / 0.03 * 2.5;
+    stars += col1 * falloff1 * twinkle1 * intensity1;
+  }
+
+  // Layer 2: dim stars (small cells, ~1.5% density)
+  let scale2 = 250.0;
+  let uv2 = vec2<f32>(theta * scale2 / PI, phi * scale2 / (PI * 0.5));
+  let cell2 = floor(uv2);
+  let h2 = hash2(cell2);
+  let offset2 = h2 - 0.5;
+  let cellCenter2 = cell2 + 0.5 + offset2 * 0.8;
+  let dist2 = length(uv2 - cellCenter2);
+  let brightness2 = hash(cell2 + vec2<f32>(11.13, 5.71));
+  if (brightness2 > 0.985) {
+    let falloff2 = exp(-dist2 * dist2 * 120.0);
+    let colorHash2 = hash(cell2 + vec2<f32>(17.1, 23.9));
+    let col2 = starColor(colorHash2);
+    let twinkle2 = sin(elapsedTime * 2.3 + brightness2 * 77.0) * 0.25 + 0.75;
+    let intensity2 = (brightness2 - 0.985) / 0.015 * 1.2;
+    stars += col2 * falloff2 * twinkle2 * intensity2;
+  }
+
+  return stars;
+}
+
+// Night sky gradient (zenith to horizon)
+fn nightSkyGradient(up: f32) -> vec3<f32> {
+  let zenith = vec3<f32>(0.003, 0.005, 0.018);
+  let horizon = vec3<f32>(0.012, 0.015, 0.028);
+  return mix(horizon, zenith, pow(max(up, 0.0), 0.5));
+}
+
+// Moon phase terminator mask
+fn moonPhaseMask(localX: f32, localY: f32, moonPhase: f32) -> f32 {
+  let r2 = localX * localX + localY * localY;
+  let r = sqrt(r2);
+  if (r > 1.0) { return 0.0; }
+
+  // Terminator position: cos(phase * 2PI) maps phase to shadow edge
+  let terminatorX = cos(moonPhase * 2.0 * PI);
+
+  var lit: f32;
+  if (moonPhase < 0.5) {
+    // Waxing: right side lights up first (localX > terminatorX)
+    lit = smoothstep(terminatorX - 0.1, terminatorX + 0.1, localX);
+  } else {
+    // Waning: right side goes dark (localX < terminatorX)
+    lit = smoothstep(terminatorX + 0.1, terminatorX - 0.1, localX);
+  }
+
+  // Limb darkening
+  let limbDark = 1.0 - r2 * 0.3;
+
+  return lit * limbDark;
+}
+
+// Multi-layer moon glow
+fn moonGlow(moonDot: f32, moonBrightness: f32) -> vec3<f32> {
+  var glow = vec3<f32>(0.0);
+
+  // Inner glow (close to moon disc)
+  if (moonDot > 0.998) {
+    let t = (moonDot - 0.998) / 0.002;
+    glow += vec3<f32>(0.15, 0.17, 0.25) * t * t * moonBrightness;
+  }
+
+  // Mid halo (Mie scattering)
+  if (moonDot > 0.990) {
+    let t = (moonDot - 0.990) / 0.010;
+    glow += vec3<f32>(0.06, 0.07, 0.12) * t * t * moonBrightness;
+  }
+
+  // Outer atmospheric glow (wide, faint)
+  if (moonDot > 0.970) {
+    let t = (moonDot - 0.970) / 0.030;
+    glow += vec3<f32>(0.015, 0.018, 0.035) * t * moonBrightness;
+  }
+
+  return glow;
 }
 
 // === 3D Simplex Noise (Ashima Arts / Stefan Gustavson) ===
@@ -175,7 +294,7 @@ fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
   return density;
 }
 
-fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, sunColor: vec3<f32>, time: f32) -> vec4<f32> {
+fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, sunColor: vec3<f32>, time: f32, dayFactor: f32) -> vec4<f32> {
   if (rayDir.y <= 0.002) {
     return vec4<f32>(0.0);
   }
@@ -198,9 +317,18 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
   var scatteredLight = vec3<f32>(0.0);
   let lightStepSize = 35.0;
 
-  // Cloud palette — shadow matches sky, lit matches sunlight
-  let shadowColor = vec3<f32>(0.55, 0.65, 0.85);
-  let litColor = sunColor * 0.95 + vec3<f32>(0.05);
+  // Day palette: warm sunlight ↔ sky-blue shadow
+  let dayShadow = vec3<f32>(0.55, 0.65, 0.85);
+  let dayLit = sunColor * 0.95 + vec3<f32>(0.05);
+
+  // Night palette: near-black shadow ↔ dim silver-blue moonlight
+  let nightShadow = vec3<f32>(0.01, 0.012, 0.025);
+  let nightLit = vec3<f32>(0.08, 0.1, 0.18);
+
+  // Blend palettes by dayFactor
+  let shadowColor = mix(nightShadow, dayShadow, dayFactor);
+  let litColor = mix(nightLit, dayLit, dayFactor);
+  let silverStr = mix(0.15, 0.5, dayFactor);
 
   for (var i = 0u; i < CLOUD_STEPS; i++) {
     let t = tStart + (f32(i) + 0.5) * stepSize;
@@ -211,7 +339,7 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
 
     let extinction = density * scene.cloudParams.y;
 
-    // Light march toward sun
+    // Light march toward sun (or moon at night)
     var lightOD = 0.0;
     for (var j = 1u; j <= CLOUD_LIGHT_STEPS; j++) {
       let lPos = pos + sunDir * lightStepSize * f32(j);
@@ -221,15 +349,13 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
     // Beer-Lambert with gentle absorption
     let beer = exp(-lightOD * 0.15);
 
-    // Multi-scatter floor: deep cloud interiors stay bright
+    // Multi-scatter floor
     let msFloor = scene.cloudParams.z;
     let brightness = beer * (1.0 - msFloor) + msFloor;
 
-    // Warm sunlit ↔ cool sky-blue shadow
+    // Lit ↔ shadow blend + silver lining
     var cloudColor = mix(shadowColor, litColor, beer) * brightness;
-
-    // Silver lining: bright sun-colored rim on backlit edges
-    cloudColor += sunColor * silverLining * beer * 0.5;
+    cloudColor += litColor * silverLining * beer * silverStr;
 
     let sampleTrans = exp(-extinction * stepSize);
 
@@ -345,47 +471,59 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // === Volumetric clouds ===
   let elapsedTime = scene.sunDir.w;  // accumulated seconds
-  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, sunDir, scene.sunColor.xyz, elapsedTime);
-  let cloudBrightness = max(dayFactor, 0.03);
-  skyColor = mix(skyColor, cloud.rgb * cloudBrightness, cloud.a);
+  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, sunDir, scene.sunColor.xyz, elapsedTime, dayFactor);
+  skyColor = mix(skyColor, cloud.rgb, cloud.a);
 
-  // === Night sky (additive — base sky already dimmed by dayFactor) ===
+  // === SEUS-style night sky (additive — base sky already dimmed by dayFactor) ===
   if (nightFactor > 0.01) {
-    // Dark blue base
-    skyColor += vec3f(0.005, 0.007, 0.02) * nightFactor;
+    // Read moon phase uniforms
+    let moonPhase = scene.skyNightParams.x;
+    let moonBright = scene.skyNightParams.y;
+    let starTime = scene.skyNightParams.z;
 
-    // Stars
+    // Night sky gradient (zenith dark → horizon atmospheric glow)
+    skyColor += nightSkyGradient(up) * nightFactor;
+
+    // Horizon atmospheric glow (subtle warm band at horizon)
+    let horizAtmo = exp(-abs(up) * 6.0);
+    skyColor += vec3<f32>(0.008, 0.010, 0.020) * horizAtmo * nightFactor;
+
+    // Multi-layer star field
     if (up > 0.0) {
-      let starCoord = floor(rayDir.xz / max(up, 0.01) * 200.0);
-      let starHash = hash(starCoord);
-      if (starHash > 0.985) {
-        let brightness = (starHash - 0.985) / 0.015;
-        let twinkle = sin(timeOfDay * 6.28 * 50.0 + starHash * 100.0) * 0.3 + 0.7;
-        skyColor += vec3f(brightness * twinkle * 2.0) * nightFactor;
-      }
+      var starFieldColor = sampleStarField(rayDir, starTime);
+      // Atmospheric extinction near horizon
+      let horizFade = smoothstep(0.0, 0.15, up);
+      starFieldColor *= horizFade;
+      // Moonlight dims stars (bright moon → 40% reduction)
+      starFieldColor *= 1.0 - 0.4 * moonBright;
+      skyColor += starFieldColor * nightFactor;
     }
 
-    // Voxel Moon (sunDir = moon direction at night, CPU already negated)
+    // Voxel Moon with phase mask (sunDir = moon direction at night, CPU already negated)
     let moonDir = sunDir;
-    let moonDot = dot(rayDir, moonDir);
+    let moonDot2 = dot(rayDir, moonDir);
     let moonRight = normalize(cross(moonDir, vec3<f32>(0.0, 1.0, 0.001)));
-    let moonUp = normalize(cross(moonRight, moonDir));
-    let moonLocalX = dot(rayDir - moonDir * moonDot, moonRight);
-    let moonLocalY = dot(rayDir - moonDir * moonDot, moonUp);
-    let moonDist = max(abs(moonLocalX), abs(moonLocalY));
+    let moonUpDir = normalize(cross(moonRight, moonDir));
+    let moonLocalX = dot(rayDir - moonDir * moonDot2, moonRight);
+    let moonLocalY = dot(rayDir - moonDir * moonDot2, moonUpDir);
+    let moonDist = max(abs(moonLocalX), abs(moonLocalY)); // square shape
     let moonSize = 0.030;
 
-    if (moonDist < moonSize && moonDot > 0.9) {
+    if (moonDist < moonSize && moonDot2 > 0.9) {
       let edge = smoothstep(moonSize, moonSize * 0.85, moonDist);
-      let moonColor = vec3<f32>(0.8, 0.85, 1.0);
-      skyColor += moonColor * edge * 2.0 * nightFactor;
+      // Normalized coordinates for phase mask (-1 to 1)
+      let normX = moonLocalX / moonSize;
+      let normY = moonLocalY / moonSize;
+      let phaseMask = moonPhaseMask(normX, normY, moonPhase);
+      // Lit face: bright moonlight color
+      let litColor = vec3<f32>(0.8, 0.85, 1.0) * phaseMask * 2.0;
+      // Earthshine on shadow face: very faint
+      let earthshine = vec3<f32>(0.04, 0.045, 0.06) * (1.0 - phaseMask);
+      skyColor += (litColor + earthshine) * edge * nightFactor;
     }
 
-    // Moon glow (round, soft)
-    if (moonDot > 0.995) {
-      let t = (moonDot - 0.995) / 0.005;
-      skyColor += vec3<f32>(0.1, 0.12, 0.2) * t * t * nightFactor;
-    }
+    // Multi-layer moon glow (wider and phase-dependent)
+    skyColor += moonGlow(moonDot2, moonBright) * nightFactor;
   }
 
   return vec4<f32>(skyColor, 1.0);
