@@ -65,8 +65,11 @@ RTX 그래픽 카드 없이도 동작하는 **소프트웨어 기반 ray tracing
 본 프로젝트는 WebGPU 기반 Deferred Rendering Pipeline을 사용하며, 다음 패스로 구성됩니다:
 
 ```
-Shadow Pass → G-Buffer → SSAO → Lighting → SSR → Sky → Water → Volumetric → Weather → Bloom → Tone Map
+Shadow Pass → G-Buffer → SSAO → Lighting → SSR → Sky → Water →
+Volumetric → Weather → TAA → Motion Blur → DoF → Auto Exposure → Bloom + Tone Map
 ```
+
+HDR 후처리 체인은 **ping-pong 듀얼 텍스처** 시스템을 사용합니다. SSR, Motion Blur, DoF 패스는 하나의 HDR 텍스처에서 읽고 다른 텍스처에 쓴 뒤 swap하여, `copyTextureToTexture` 오버헤드를 제거합니다.
 
 ### 구현 상태 비교표
 
@@ -75,8 +78,8 @@ Shadow Pass → G-Buffer → SSAO → Lighting → SSR → Sky → Water → Vol
 | **Deferred Rendering** | O | O | O | 완료 |
 | **Cook-Torrance PBR** | O | O | O | 완료 |
 | **Cascaded Shadow Mapping** | O | O | O (3 cascades, PCF 3x3) | 완료 |
-| **Screen-Space Contact Shadow** | O | - | X | 미구현 |
-| **SSAO** | O | O | O (half-res, bilateral blur) | 완료 |
+| **Screen-Space Contact Shadow** | O | - | O (screen-space ray march) | 완료 |
+| **SSAO** | O | O | O (half-res, separable bilateral blur 2-pass) | 완료 |
 | **Screen-Space Reflections** | O | O | O (32 steps, binary refine) | 완료 |
 | **대기 산란 (Sky)** | O | O | O (Rayleigh + Mie) | 완료 |
 | **볼류메트릭 구름** | 2D | 3D | O (16-step ray march) | 완료 |
@@ -91,7 +94,7 @@ Shadow Pass → G-Buffer → SSAO → Lighting → SSR → Sky → Water → Vol
 | **절차적 텍스처** | - | - | O (Albedo + Material + Normal) | 완료 |
 | **Vertex AO** | O | O | O (AO-aware 삼각형 분할) | 완료 |
 | **Point Lights** | O | O | O (최대 128개, Deferred) | 완료 |
-| **TAA** | O | O | X | 미구현 |
+| **TAA** | O | O | O (Halton jitter, AABB history clamp, velocity buffer) | 완료 |
 | **POM + Self-Shadow** | O | O | X | 미구현 |
 | **Path Traced GI** | - | O | X | 미구현 |
 | **Ray Traced Reflections** | - | O | X | 미구현 |
@@ -134,7 +137,7 @@ PTGI는 복셀 기반 path tracing으로 정확한 GI를 계산합니다:
 
 #### 현재 프로젝트 상태
 
-- **SSAO**: 구현 완료 (half-res, bilateral blur)
+- **SSAO**: 구현 완료 (half-res, separable bilateral blur 2-pass)
 - **Hemisphere Ambient**: 하늘/지면 2색 보간 — 방향성 제한적
 - **GI 바운스 라이트**: 미구현
 
@@ -164,9 +167,9 @@ PTGI는 복셀 기반 path tracing으로 정확한 GI를 계산합니다:
 #### 현재 프로젝트 상태
 
 - **Cascaded Shadow Mapping**: 3 cascades, 2048x2048, PCF 3x3 완료
-- **Contact Shadows**: 미구현
+- **Contact Shadows**: 구현 완료 (screen-space ray march, Config에서 maxSteps/rayLength/thickness 설정 가능)
 
-#### Screen-Space Contact Shadow 구현 전략
+#### Screen-Space Contact Shadow 구현 (참고)
 
 ```
 contact shadow 알고리즘:
@@ -359,9 +362,10 @@ SEUS의 대기 시스템은 물리 기반 산란 모델의 정수입니다:
 
 #### 선택적 개선
 
-- **Bloom 개선**: 렌즈 더트 효과, 색수차(chromatic aberration) 추가
-- **자동 노출 (Auto Exposure)**: 평균 휘도 기반 적응형 노출 → 어두운 동굴 진입/이탈 시 자연스러운 적응
-- **Eye Adaptation**: 시간 지연이 있는 노출 적응 (sudden brightness change 완화)
+- **Bloom 개선**: 렌즈 더트 효과 추가 (색수차는 이미 구현됨)
+- **자동 노출 (Auto Exposure)**: 구현 완료 — 평균 휘도 추출 → 다운샘플 피라미드 → 시간 적응형 노출
+- **Motion Blur**: 구현 완료 — 속도 기반 per-pixel blur
+- **Depth of Field**: 구현 완료 — signed CoC + Fibonacci spiral 32-sample
 
 ---
 
@@ -437,7 +441,7 @@ TAA 알고리즘:
 - Jitter offset uniform
 ```
 
-**우선순위: 높음** — TAA는 시각 품질 향상 대비 구현 복잡도가 합리적이며, 향후 고급 기법(SVGF, temporal 필터)의 기반이 됩니다.
+**현재 상태: 구현 완료** — TAA.ts에서 Halton 시퀀스 jitter, velocity buffer, 3x3 neighborhood AABB clamping, history blend가 모두 구현되어 있습니다. Bind group은 ping-pong 양쪽으로 캐싱되어 프레임당 재생성을 방지합니다.
 
 ---
 
@@ -488,10 +492,10 @@ Self-Shadowing 추가:
 
 | 순서 | 기능 | 효과 | 난이도 | 의존성 |
 |:---:|------|------|:---:|------|
-| 1 | **TAA** | 앨리어싱 제거, 전체적 매끄러움 | 중 | 없음 |
-| 2 | **Screen-Space Contact Shadow** | 미세 오브젝트 그림자 | 낮 | 없음 |
+| ~~1~~ | ~~**TAA**~~ | ~~앨리어싱 제거, 전체적 매끄러움~~ | ~~중~~ | **완료** |
+| ~~2~~ | ~~**Screen-Space Contact Shadow**~~ | ~~미세 오브젝트 그림자~~ | ~~낮~~ | **완료** |
 | 3 | **대기 산란 기반 Fog** | 원경 색상이 하늘과 일치 | 낮 | 없음 |
-| 4 | **Auto Exposure** | 동굴/야외 밝기 적응 | 낮 | 없음 |
+| ~~4~~ | ~~**Auto Exposure**~~ | ~~동굴/야외 밝기 적응~~ | ~~낮~~ | **완료** |
 
 ### Phase 2: 몰입감 강화 (중~높은 난이도)
 
