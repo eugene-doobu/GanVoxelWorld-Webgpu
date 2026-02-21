@@ -25,13 +25,28 @@ function wgslInclude(): Plugin {
   return {
     name: 'wgsl-include',
     enforce: 'pre',
-    transform(code, id) {
-      // Strip query params (e.g. ?raw) for path matching
+    load(id) {
       const cleanId = id.replace(/\?.*$/, '');
       if (!cleanId.endsWith('.wgsl')) return;
-      if (!code.includes('#include')) return;
-      const processed = processIncludes(code, cleanId, new Set([cleanId]));
-      return { code: processed, map: null };
+
+      let code: string;
+      try {
+        code = readFileSync(cleanId, 'utf-8');
+      } catch {
+        return;
+      }
+
+      if (code.includes('#include')) {
+        code = processIncludes(code, cleanId, new Set([cleanId]));
+      }
+
+      // For ?raw imports, return as JS string export directly
+      // This prevents Vite's built-in raw handler from returning unprocessed content
+      if (id.includes('?')) {
+        return `export default ${JSON.stringify(code)}`;
+      }
+
+      return code;
     },
     handleHotUpdate({ file, server }) {
       // When a common include file changes, invalidate all .wgsl modules
