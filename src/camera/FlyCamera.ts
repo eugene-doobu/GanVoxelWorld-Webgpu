@@ -15,47 +15,68 @@ export class FlyCamera {
   private view = mat4.create();
   private viewProj = mat4.create();
 
+  // Stored listener references for cleanup
+  private onKeyDown: (e: KeyboardEvent) => void;
+  private onKeyUp: (e: KeyboardEvent) => void;
+  private onMouseDown: (e: MouseEvent) => void;
+  private onMouseUp: (e: MouseEvent) => void;
+  private onContextMenu: (e: Event) => void;
+  private onMouseMove: (e: MouseEvent) => void;
+  private onWheel: (e: WheelEvent) => void;
+
   constructor(canvas: HTMLCanvasElement, startPos: vec3 = vec3.fromValues(128, 90, 128)) {
     this.canvas = canvas;
     this.position = vec3.clone(startPos);
 
-    document.addEventListener('keydown', (e) => {
+    this.onKeyDown = (e: KeyboardEvent) => {
       this.keys.add(e.code);
-    });
-    document.addEventListener('keyup', (e) => {
+    };
+    this.onKeyUp = (e: KeyboardEvent) => {
       this.keys.delete(e.code);
-    });
-
-    // Unreal-style: right-click to look
-    canvas.addEventListener('mousedown', (e) => {
+    };
+    this.onMouseDown = (e: MouseEvent) => {
       if (e.button === 2) {
         this.rightMouseDown = true;
         canvas.requestPointerLock();
       }
-    });
-    document.addEventListener('mouseup', (e) => {
+    };
+    this.onMouseUp = (e: MouseEvent) => {
       if (e.button === 2) {
         this.rightMouseDown = false;
         document.exitPointerLock();
       }
-    });
-
-    // Prevent context menu on right-click
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-    document.addEventListener('mousemove', (e) => {
+    };
+    this.onContextMenu = (e: Event) => e.preventDefault();
+    this.onMouseMove = (e: MouseEvent) => {
       if (!this.rightMouseDown) return;
       this.yaw += e.movementX * Config.data.camera.mouseSensitivity;
       this.pitch -= e.movementY * Config.data.camera.mouseSensitivity;
       this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
-    });
-
-    // Mouse wheel to adjust speed
-    canvas.addEventListener('wheel', (e) => {
+    };
+    this.onWheel = (e: WheelEvent) => {
       e.preventDefault();
       this.speed *= e.deltaY < 0 ? 1.2 : 1 / 1.2;
       this.speed = Math.max(1, Math.min(200, this.speed));
-    }, { passive: false });
+    };
+
+    document.addEventListener('keydown', this.onKeyDown);
+    document.addEventListener('keyup', this.onKeyUp);
+    canvas.addEventListener('mousedown', this.onMouseDown);
+    document.addEventListener('mouseup', this.onMouseUp);
+    canvas.addEventListener('contextmenu', this.onContextMenu);
+    document.addEventListener('mousemove', this.onMouseMove);
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
+  }
+
+  destroy(): void {
+    document.removeEventListener('keydown', this.onKeyDown);
+    document.removeEventListener('keyup', this.onKeyUp);
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    document.removeEventListener('mouseup', this.onMouseUp);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu);
+    document.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.keys.clear();
   }
 
   update(dt: number): void {

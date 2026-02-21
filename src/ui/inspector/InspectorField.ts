@@ -1,4 +1,4 @@
-import { Config } from '../../config/Config';
+import { Config, SetResult } from '../../config/Config';
 
 export interface FieldOptions {
   type: 'slider' | 'number' | 'toggle' | 'dropdown';
@@ -8,6 +8,17 @@ export interface FieldOptions {
   max?: number;
   step?: number;
   options?: { label: string; value: string | number }[];
+  /** Convert internal config value to display value */
+  toDisplay?: (v: number) => number;
+  /** Convert display value back to internal config value */
+  fromDisplay?: (v: number) => number;
+}
+
+function showFieldError(row: HTMLElement, result: SetResult): void {
+  if (result.success) return;
+  console.warn(`[Config] ${result.error}`);
+  row.classList.add('inspector-field-error');
+  setTimeout(() => row.classList.remove('inspector-field-error'), 800);
 }
 
 export function createField(opts: FieldOptions): HTMLElement {
@@ -23,7 +34,10 @@ export function createField(opts: FieldOptions): HTMLElement {
   const control = document.createElement('div');
   control.className = 'inspector-field-control';
 
-  const currentValue = Config.get(opts.configPath);
+  const rawValue = Config.get(opts.configPath);
+  const toDisplay = opts.toDisplay ?? ((v: number) => v);
+  const fromDisplay = opts.fromDisplay ?? ((v: number) => v);
+  const currentValue = toDisplay(rawValue as number);
 
   switch (opts.type) {
     case 'slider': {
@@ -40,8 +54,12 @@ export function createField(opts: FieldOptions): HTMLElement {
 
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
-        Config.set(opts.configPath, v);
-        valSpan.textContent = formatVal(v, opts.step);
+        const result = Config.set(opts.configPath, fromDisplay(v));
+        if (result.success) {
+          valSpan.textContent = formatVal(v, opts.step);
+        } else {
+          showFieldError(row, result);
+        }
       });
 
       control.appendChild(input);
@@ -58,7 +76,10 @@ export function createField(opts: FieldOptions): HTMLElement {
 
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
-        if (!isNaN(v)) Config.set(opts.configPath, v);
+        if (!isNaN(v)) {
+          const result = Config.set(opts.configPath, fromDisplay(v));
+          showFieldError(row, result);
+        }
       });
 
       control.appendChild(input);
@@ -70,7 +91,8 @@ export function createField(opts: FieldOptions): HTMLElement {
       input.checked = !!currentValue;
 
       input.addEventListener('change', () => {
-        Config.set(opts.configPath, input.checked);
+        const result = Config.set(opts.configPath, input.checked);
+        showFieldError(row, result);
       });
 
       control.appendChild(input);
@@ -88,7 +110,8 @@ export function createField(opts: FieldOptions): HTMLElement {
 
       select.addEventListener('change', () => {
         const v = isNaN(Number(select.value)) ? select.value : Number(select.value);
-        Config.set(opts.configPath, v);
+        const result = Config.set(opts.configPath, v);
+        showFieldError(row, result);
       });
 
       control.appendChild(select);

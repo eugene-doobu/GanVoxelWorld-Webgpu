@@ -18,6 +18,89 @@ const FACE_VERTICES: Float32Array[] = [
   new Float32Array([0,0,1,  0,0,0,  0,1,0,  0,1,1]),
 ];
 
+// Growable typed buffer for building mesh data directly into typed arrays.
+// Supports dual f32/u32 views on the same ArrayBuffer for interleaved packing.
+class GrowableBuffer {
+  buffer: ArrayBuffer;
+  f32: Float32Array;
+  u32: Uint32Array;
+  /** Current write offset in 32-bit elements */
+  offset: number;
+
+  constructor(initialFloats: number) {
+    this.buffer = new ArrayBuffer(initialFloats * 4);
+    this.f32 = new Float32Array(this.buffer);
+    this.u32 = new Uint32Array(this.buffer);
+    this.offset = 0;
+  }
+
+  /** Ensure there is room for at least `count` more 32-bit elements. */
+  ensure(count: number): void {
+    const needed = this.offset + count;
+    if (needed <= this.f32.length) return;
+    let newLen = this.f32.length * 2;
+    while (newLen < needed) newLen *= 2;
+    const newBuf = new ArrayBuffer(newLen * 4);
+    new Uint8Array(newBuf).set(new Uint8Array(this.buffer, 0, this.offset * 4));
+    this.buffer = newBuf;
+    this.f32 = new Float32Array(newBuf);
+    this.u32 = new Uint32Array(newBuf);
+  }
+
+  /** Write a float value and advance offset. */
+  pushF32(v: number): void {
+    this.f32[this.offset++] = v;
+  }
+
+  /** Write a uint32 value and advance offset. */
+  pushU32(v: number): void {
+    this.u32[this.offset++] = v;
+  }
+
+  /** Return a trimmed Float32Array copy of the written data. */
+  trimF32(): Float32Array {
+    // Must copy to a correctly-sized ArrayBuffer because consumers use .buffer for GPU upload
+    return new Float32Array(this.buffer.slice(0, this.offset * 4));
+  }
+}
+
+// Growable index buffer backed by Uint32Array.
+class GrowableIndexBuffer {
+  data: Uint32Array;
+  offset: number;
+
+  constructor(initialCount: number) {
+    this.data = new Uint32Array(initialCount);
+    this.offset = 0;
+  }
+
+  ensure(count: number): void {
+    const needed = this.offset + count;
+    if (needed <= this.data.length) return;
+    let newLen = this.data.length * 2;
+    while (newLen < needed) newLen *= 2;
+    const newData = new Uint32Array(newLen);
+    newData.set(this.data.subarray(0, this.offset));
+    this.data = newData;
+  }
+
+  push6(a: number, b: number, c: number, d: number, e: number, f: number): void {
+    const o = this.offset;
+    this.data[o] = a;
+    this.data[o + 1] = b;
+    this.data[o + 2] = c;
+    this.data[o + 3] = d;
+    this.data[o + 4] = e;
+    this.data[o + 5] = f;
+    this.offset = o + 6;
+  }
+
+  trim(): Uint32Array {
+    // Must copy to a correctly-sized ArrayBuffer because consumers use .buffer for GPU upload
+    return new Uint32Array(this.data.buffer.slice(0, this.offset * 4));
+  }
+}
+
 // AO neighbor offsets per face per vertex: [side1, side2, corner] as [dx,dy,dz] relative to face normal direction
 // Each face has 4 vertices, each vertex checks 3 neighbors (side1, side2, corner)
 // Format: AO_OFFSETS[face][vertex] = [s1x,s1y,s1z, s2x,s2y,s2z, cx,cy,cz]
@@ -91,22 +174,28 @@ export interface MeshData {
 }
 
 export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = null): MeshData {
-  // Use dynamic arrays for simplicity and trim later
-  let vertexFloats: number[] = [];
-  let indexArray: number[] = [];
+  // Pre-allocate typed arrays directly. Estimated capacities:
+  // Solid: ~5000 faces * 4 verts * 7 floats = 140,000 floats; indices: ~5000 faces * 6 = 30,000
+  // Water/Veg: much smaller, start conservative.
+  const solidVerts = new GrowableBuffer(140000);
+  const solidIdx = new GrowableIndexBuffer(30000);
   let vertexCount = 0;
 
-  // Water mesh (separate): pos3 + uv2 = 5 floats per vertex = 20 bytes
-  let waterVertexFloats: number[] = [];
-  let waterIndexArray: number[] = [];
+  // Water mesh (separate): pos3 + uv2 = 5 floats per vertex
+  const waterVerts = new GrowableBuffer(5000);
+  const waterIdx = new GrowableIndexBuffer(3000);
   let waterVertexCount = 0;
 
-  // Vegetation mesh (cross-mesh): same 28-byte vertex format as solid
-  let vegVertexFloats: number[] = [];
-  let vegIndexArray: number[] = [];
+  // Vegetation mesh (cross-mesh): same 28-byte (7 float) vertex format as solid
+  const vegVerts = new GrowableBuffer(8000);
+  const vegIdx = new GrowableIndexBuffer(4800);
   let vegVertexCount = 0;
 
   const uvSize = 1.0 / ATLAS_TILES;
+
+  // UV lookup table: vertex 0=(0,0), 1=(1,0), 2=(1,1), 3=(0,1)
+  const UV_U = [0, 1, 1, 0];
+  const UV_V = [0, 0, 1, 1];
 
   for (let x = 0; x < CHUNK_WIDTH; x++) {
     for (let y = 0; y < CHUNK_HEIGHT; y++) {
@@ -116,35 +205,27 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
 
         // Water blocks go to separate mesh (TOP face only = water surface)
         if (isBlockWater(blockType)) {
-          for (let face = 0; face < 6; face++) {
-            // Only render TOP face as water surface (sides/bottom cause double-layer underwater)
-            if (face !== 0) continue;
-            if (!shouldRenderWaterFace(chunk, neighbors, x, y, z, face)) continue;
+          // Only render TOP face (face=0)
+          if (!shouldRenderWaterFace(chunk, neighbors, x, y, z, 0)) continue;
 
-            const fv = FACE_VERTICES[face];
-            const baseVertex = waterVertexCount;
+          const fv = FACE_VERTICES[0];
+          const baseVertex = waterVertexCount;
 
-            for (let v = 0; v < 4; v++) {
-              const vx = x + fv[v * 3 + 0];
-              const vy = y + fv[v * 3 + 1];
-              const vz = z + fv[v * 3 + 2];
-
-              waterVertexFloats.push(
-                chunk.worldOffsetX + vx,
-                vy,
-                chunk.worldOffsetZ + vz,
-              );
-
-              const uv = getVertexUV(v);
-              waterVertexFloats.push(uv[0], uv[1]);
-            }
-
-            waterIndexArray.push(
-              baseVertex + 0, baseVertex + 2, baseVertex + 1,
-              baseVertex + 0, baseVertex + 3, baseVertex + 2,
-            );
-            waterVertexCount += 4;
+          waterVerts.ensure(20); // 4 verts * 5 floats
+          for (let v = 0; v < 4; v++) {
+            waterVerts.pushF32(chunk.worldOffsetX + x + fv[v * 3 + 0]);
+            waterVerts.pushF32(y + fv[v * 3 + 1]);
+            waterVerts.pushF32(chunk.worldOffsetZ + z + fv[v * 3 + 2]);
+            waterVerts.pushF32(UV_U[v]);
+            waterVerts.pushF32(UV_V[v]);
           }
+
+          waterIdx.ensure(6);
+          waterIdx.push6(
+            baseVertex + 0, baseVertex + 2, baseVertex + 1,
+            baseVertex + 0, baseVertex + 3, baseVertex + 2,
+          );
+          waterVertexCount += 4;
           continue;
         }
 
@@ -156,68 +237,65 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
 
           const wx = chunk.worldOffsetX + x;
           const wz = chunk.worldOffsetZ + z;
-          const faceIdxPacked = 0 | (blockType << 8); // faceIdx=0 (UP) for natural lighting
+          const faceIdxPacked = 0 | (blockType << 8);
 
-          // Y offsets: bottom slightly above integer, top slightly below next integer
-          // so fract(worldPos.y) gives ~0 at bottom and ~1 at top for wind animation
           const yBot = y + 0.01;
           const yTop = y + 0.99;
+
+          // 2 quads * 4 verts * 7 floats = 56 floats; 2 quads * 6 indices = 12
+          vegVerts.ensure(56);
+          vegIdx.ensure(12);
 
           // Quad 1: diagonal (0,0)-(1,1) in XZ
           const baseV1 = vegVertexCount;
           // v0: bottom-left
-          vegVertexFloats.push(wx, yBot, wz);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU, tileV + uvSize);
-          vegVertexFloats.push(1.0);
+          vegVerts.pushF32(wx); vegVerts.pushF32(yBot); vegVerts.pushF32(wz);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
           // v1: bottom-right
-          vegVertexFloats.push(wx + 1, yBot, wz + 1);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU + uvSize, tileV + uvSize);
-          vegVertexFloats.push(1.0);
+          vegVerts.pushF32(wx + 1); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + 1);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
           // v2: top-right
-          vegVertexFloats.push(wx + 1, yTop, wz + 1);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU + uvSize, tileV);
-          vegVertexFloats.push(1.0);
+          vegVerts.pushF32(wx + 1); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + 1);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
           // v3: top-left
-          vegVertexFloats.push(wx, yTop, wz);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU, tileV);
-          vegVertexFloats.push(1.0);
-          // Single winding — cullMode:'none' renders both sides
-          vegIndexArray.push(baseV1 + 0, baseV1 + 2, baseV1 + 1);
-          vegIndexArray.push(baseV1 + 0, baseV1 + 3, baseV1 + 2);
+          vegVerts.pushF32(wx); vegVerts.pushF32(yTop); vegVerts.pushF32(wz);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegIdx.push6(baseV1 + 0, baseV1 + 2, baseV1 + 1, baseV1 + 0, baseV1 + 3, baseV1 + 2);
           vegVertexCount += 4;
 
           // Quad 2: other diagonal (1,0)-(0,1) in XZ
           const baseV2 = vegVertexCount;
-          vegVertexFloats.push(wx + 1, yBot, wz);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU, tileV + uvSize);
-          vegVertexFloats.push(1.0);
-          vegVertexFloats.push(wx, yBot, wz + 1);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU + uvSize, tileV + uvSize);
-          vegVertexFloats.push(1.0);
-          vegVertexFloats.push(wx, yTop, wz + 1);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU + uvSize, tileV);
-          vegVertexFloats.push(1.0);
-          vegVertexFloats.push(wx + 1, yTop, wz);
-          vegVertexFloats.push(faceIdxPacked);
-          vegVertexFloats.push(tileU, tileV);
-          vegVertexFloats.push(1.0);
-          vegIndexArray.push(baseV2 + 0, baseV2 + 2, baseV2 + 1);
-          vegIndexArray.push(baseV2 + 0, baseV2 + 3, baseV2 + 2);
+          vegVerts.pushF32(wx + 1); vegVerts.pushF32(yBot); vegVerts.pushF32(wz);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + 1);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + 1);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + 1); vegVerts.pushF32(yTop); vegVerts.pushF32(wz);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegIdx.push6(baseV2 + 0, baseV2 + 2, baseV2 + 1, baseV2 + 0, baseV2 + 3, baseV2 + 2);
           vegVertexCount += 4;
 
           continue;
         }
 
         // Render all non-AIR, non-water solid blocks
-
-        // Compute atlas UV for this block type
         const tileIndex = blockType as number;
         const tileU = (tileIndex % ATLAS_TILES) * uvSize;
         const tileV = Math.floor(tileIndex / ATLAS_TILES) * uvSize;
@@ -229,40 +307,47 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
           const fv = FACE_VERTICES[face];
           const baseVertex = vertexCount;
 
-          const ao: number[] = [];
+          // 4 verts * 7 floats = 28; 6 indices
+          solidVerts.ensure(28);
+          solidIdx.ensure(6);
+
+          let ao0 = 0, ao1 = 0, ao2 = 0, ao3 = 0;
           for (let v = 0; v < 4; v++) {
             const vx = x + fv[v * 3 + 0];
             const vy = y + fv[v * 3 + 1];
             const vz = z + fv[v * 3 + 2];
 
-            // World position (offset by chunk world position)
-            vertexFloats.push(
-              chunk.worldOffsetX + vx,
-              vy,
-              chunk.worldOffsetZ + vz,
-            );
+            // World position
+            solidVerts.pushF32(chunk.worldOffsetX + vx);
+            solidVerts.pushF32(vy);
+            solidVerts.pushF32(chunk.worldOffsetZ + vz);
 
             // Normal index (as u32 reinterpreted): low 8 bits = face, upper bits = blockType
-            vertexFloats.push(face | (blockType << 8)); // will be written as u32
+            solidVerts.pushU32(face | (blockType << 8));
 
             // UV
-            const uv = getVertexUV(v);
-            vertexFloats.push(tileU + uv[0] * uvSize, tileV + uv[1] * uvSize);
+            solidVerts.pushF32(tileU + UV_U[v] * uvSize);
+            solidVerts.pushF32(tileV + UV_V[v] * uvSize);
 
             // Vertex AO
             const aoVal = computeVertexAO(chunk, neighbors, x, y, z, face, v);
-            ao.push(aoVal);
-            vertexFloats.push(aoVal);
+            solidVerts.pushF32(aoVal);
+
+            // Store AO per vertex for triangle flip decision
+            if (v === 0) ao0 = aoVal;
+            else if (v === 1) ao1 = aoVal;
+            else if (v === 2) ao2 = aoVal;
+            else ao3 = aoVal;
           }
 
           // AO-aware triangle flip: choose diagonal with more balanced AO
-          if (ao[0] + ao[2] > ao[1] + ao[3]) {
-            indexArray.push(
+          if (ao0 + ao2 > ao1 + ao3) {
+            solidIdx.push6(
               baseVertex + 0, baseVertex + 2, baseVertex + 1,
               baseVertex + 0, baseVertex + 3, baseVertex + 2,
             );
           } else {
-            indexArray.push(
+            solidIdx.push6(
               baseVertex + 0, baseVertex + 3, baseVertex + 1,
               baseVertex + 1, baseVertex + 3, baseVertex + 2,
             );
@@ -273,69 +358,34 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
     }
   }
 
-  // Convert solid mesh to typed arrays
-  const vertBuf = new ArrayBuffer(vertexCount * 28); // 28 bytes per vertex
-  const f32View = new Float32Array(vertBuf);
-  const u32View = new Uint32Array(vertBuf);
+  // Trim solid vertex buffer — data is already in correct interleaved format
+  const solidVerticesTrimmed = solidVerts.trimF32();
+  const solidIndicesTrimmed = solidIdx.trim();
 
-  for (let i = 0; i < vertexCount; i++) {
-    const srcOff = i * 7;
-    const dstOff = i * 7;
-    f32View[dstOff + 0] = vertexFloats[srcOff + 0]; // posX
-    f32View[dstOff + 1] = vertexFloats[srcOff + 1]; // posY
-    f32View[dstOff + 2] = vertexFloats[srcOff + 2]; // posZ
-    u32View[dstOff + 3] = vertexFloats[srcOff + 3]; // normalIndex as u32
-    f32View[dstOff + 4] = vertexFloats[srcOff + 4]; // u
-    f32View[dstOff + 5] = vertexFloats[srcOff + 5]; // v
-    f32View[dstOff + 6] = vertexFloats[srcOff + 6]; // ao
-  }
+  // Trim water buffers
+  const waterVerticesTrimmed = waterVerts.trimF32();
+  const waterIndicesTrimmed = waterIdx.trim();
 
-  // Convert water mesh to typed arrays (pos3 + uv2 = 5 floats = 20 bytes)
-  const waterVerts = new Float32Array(waterVertexFloats);
-  const waterInds = new Uint32Array(waterIndexArray);
-
-  // Convert vegetation mesh to typed arrays (same 28-byte format as solid)
-  const vegBuf = new ArrayBuffer(vegVertexCount * 28);
-  const vegF32 = new Float32Array(vegBuf);
-  const vegU32 = new Uint32Array(vegBuf);
-  for (let i = 0; i < vegVertexCount; i++) {
-    const srcOff = i * 7;
-    const dstOff = i * 7;
-    vegF32[dstOff + 0] = vegVertexFloats[srcOff + 0];
-    vegF32[dstOff + 1] = vegVertexFloats[srcOff + 1];
-    vegF32[dstOff + 2] = vegVertexFloats[srcOff + 2];
-    vegU32[dstOff + 3] = vegVertexFloats[srcOff + 3];
-    vegF32[dstOff + 4] = vegVertexFloats[srcOff + 4];
-    vegF32[dstOff + 5] = vegVertexFloats[srcOff + 5];
-    vegF32[dstOff + 6] = vegVertexFloats[srcOff + 6];
-  }
+  // Trim vegetation buffers — data is already in correct interleaved format
+  const vegVerticesTrimmed = vegVerts.trimF32();
+  const vegIndicesTrimmed = vegIdx.trim();
 
   return {
-    vertices: new Float32Array(vertBuf),
-    indices: new Uint32Array(indexArray),
+    vertices: solidVerticesTrimmed,
+    indices: solidIndicesTrimmed,
     vertexCount,
-    indexCount: indexArray.length,
-    waterVertices: waterVerts,
-    waterIndices: waterInds,
+    indexCount: solidIndicesTrimmed.length,
+    waterVertices: waterVerticesTrimmed,
+    waterIndices: waterIndicesTrimmed,
     waterVertexCount,
-    waterIndexCount: waterIndexArray.length,
-    vegVertices: new Float32Array(vegBuf),
-    vegIndices: new Uint32Array(vegIndexArray),
+    waterIndexCount: waterIndicesTrimmed.length,
+    vegVertices: vegVerticesTrimmed,
+    vegIndices: vegIndicesTrimmed,
     vegVertexCount,
-    vegIndexCount: vegIndexArray.length,
+    vegIndexCount: vegIndicesTrimmed.length,
   };
 }
 
-function getVertexUV(vertexIndex: number): [number, number] {
-  // UV corners: 0=(0,0), 1=(1,0), 2=(1,1), 3=(0,1)
-  switch (vertexIndex) {
-    case 0: return [0, 0];
-    case 1: return [1, 0];
-    case 2: return [1, 1];
-    case 3: return [0, 1];
-    default: return [0, 0];
-  }
-}
 
 function isSolidAt(chunk: Chunk, neighbors: ChunkNeighbors | null, x: number, y: number, z: number): boolean {
   // Y out-of-bounds: below world is solid, above world is air

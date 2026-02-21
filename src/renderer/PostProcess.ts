@@ -32,13 +32,31 @@ const SSR_UNIFORM_SIZE = 160;
 export class PostProcess {
   private ctx: WebGPUContext;
 
-  // HDR render target (lighting output)
-  hdrTexture!: GPUTexture;
-  hdrTextureView!: GPUTextureView;
+  // HDR ping-pong textures: both are render attachments + texture bindings
+  // hdrTextures[0] and hdrTextures[1] alternate as read/write targets.
+  // hdrCurrent tracks which index holds the latest scene data.
+  private hdrTextures!: [GPUTexture, GPUTexture];
+  private hdrViews!: [GPUTextureView, GPUTextureView];
+  private hdrCurrent = 0; // index into hdrTextures for the "current" scene
 
-  // HDR copy for SSR + water refraction (read scene color while writing to HDR)
-  hdrCopyTexture!: GPUTexture;
-  hdrCopyTextureView!: GPUTextureView;
+  // Public accessors for backward compatibility
+  get hdrTexture(): GPUTexture { return this.hdrTextures[this.hdrCurrent]; }
+  get hdrTextureView(): GPUTextureView { return this.hdrViews[this.hdrCurrent]; }
+  get hdrCopyTexture(): GPUTexture { return this.hdrTextures[1 - this.hdrCurrent]; }
+  get hdrCopyTextureView(): GPUTextureView { return this.hdrViews[1 - this.hdrCurrent]; }
+
+  /** Get the "other" (non-current) HDR texture view — used as write target in ping-pong */
+  get hdrOtherView(): GPUTextureView { return this.hdrViews[1 - this.hdrCurrent]; }
+  get hdrOtherTexture(): GPUTexture { return this.hdrTextures[1 - this.hdrCurrent]; }
+
+  /** Swap the ping-pong: the "other" becomes "current" */
+  swapHdr(): void { this.hdrCurrent = 1 - this.hdrCurrent; }
+
+  /** Get HDR view by index (0 or 1). Used for creating ping-pong-aware bind groups. */
+  getHdrView(index: number): GPUTextureView { return this.hdrViews[index]; }
+
+  /** Get the current ping-pong index */
+  get hdrCurrentIndex(): number { return this.hdrCurrent; }
 
   // Bloom mip chain
   private bloomMips: GPUTexture[] = [];
@@ -72,12 +90,14 @@ export class PostProcess {
   private linearSampler!: GPUSampler;
 
   // Cached bind groups (recreated on resize)
-  private thresholdBindGroup: GPUBindGroup | null = null;
+  // Bind groups that reference HDR views are stored as pairs [forHdr0, forHdr1]
+  // indexed by hdrCurrent to pick the correct one at render time.
+  private thresholdBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private downsampleBindGroups: GPUBindGroup[] = [];
   private upsampleBindGroups: GPUBindGroup[] = [];
-  private tonemapBindGroup: GPUBindGroup | null = null;
+  private tonemapBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private volumetricBindGroup: GPUBindGroup | null = null;
-  private ssrBindGroup: GPUBindGroup | null = null;
+  private ssrBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
 
   // External textures needed for volumetric (set via setVolumetricResources)
   private depthTextureView: GPUTextureView | null = null;
@@ -94,14 +114,14 @@ export class PostProcess {
   private motionBlurPipeline!: GPURenderPipeline;
   private motionBlurBGL!: GPUBindGroupLayout;
   private motionBlurParamsBuffer!: GPUBuffer;
-  private motionBlurBindGroup: GPUBindGroup | null = null;
+  private motionBlurBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private motionBlurVelocityView: GPUTextureView | null = null;
 
   // Depth of Field
   private dofPipeline!: GPURenderPipeline;
   private dofBGL!: GPUBindGroupLayout;
   private dofParamsBuffer!: GPUBuffer;
-  private dofBindGroup: GPUBindGroup | null = null;
+  private dofBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private dofDepthView: GPUTextureView | null = null;
 
   // Auto Exposure
@@ -117,7 +137,7 @@ export class PostProcess {
   private adaptedLumViews: [GPUTextureView, GPUTextureView] | null = null;
   private adaptParamsBuffer!: GPUBuffer;
   private adaptParamsF32 = new Float32Array(ADAPT_PARAMS_SIZE / 4);
-  private lumExtractBindGroup: GPUBindGroup | null = null;
+  private lumExtractBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private lumDownsampleBindGroups: GPUBindGroup[] = [];
   private lumAdaptBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private adaptPingPong = 0;
@@ -362,13 +382,7 @@ export class PostProcess {
       fragment: {
         module: ssrModule,
         entryPoint: 'fs_main',
-        targets: [{
-          format: HDR_FORMAT,
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-          },
-        }],
+        targets: [{ format: HDR_FORMAT }], // No blend — SSR shader does manual compositing via ping-pong
       },
       primitive: { topology: 'triangle-list' },
     });
@@ -496,8 +510,10 @@ export class PostProcess {
     const bloomMipLevels = Config.data.rendering.bloom.mipLevels;
 
     // Destroy old
-    if (this.hdrTexture) this.hdrTexture.destroy();
-    if (this.hdrCopyTexture) this.hdrCopyTexture.destroy();
+    if (this.hdrTextures) {
+      this.hdrTextures[0].destroy();
+      this.hdrTextures[1].destroy();
+    }
     for (const t of this.bloomMips) t.destroy();
     this.bloomMips = [];
     this.bloomMipViews = [];
@@ -514,19 +530,13 @@ export class PostProcess {
     const w = this.ctx.canvas.width;
     const h = this.ctx.canvas.height;
 
-    this.hdrTexture = this.ctx.device.createTexture({
-      size: [w, h],
-      format: HDR_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-    });
-    this.hdrTextureView = this.hdrTexture.createView();
-
-    this.hdrCopyTexture = this.ctx.device.createTexture({
-      size: [w, h],
-      format: HDR_FORMAT,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    this.hdrCopyTextureView = this.hdrCopyTexture.createView();
+    // Both HDR textures are identical: render attachment + texture binding + copy src/dst
+    const hdrUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST;
+    const hdrA = this.ctx.device.createTexture({ size: [w, h], format: HDR_FORMAT, usage: hdrUsage });
+    const hdrB = this.ctx.device.createTexture({ size: [w, h], format: HDR_FORMAT, usage: hdrUsage });
+    this.hdrTextures = [hdrA, hdrB];
+    this.hdrViews = [hdrA.createView(), hdrB.createView()];
+    this.hdrCurrent = 0;
 
     // Create bloom mip chain
     let mipW = Math.max(1, Math.floor(w / 2));
@@ -587,17 +597,27 @@ export class PostProcess {
   private rebuildBindGroups(): void {
     const bloomMipLevels = Config.data.rendering.bloom.mipLevels;
 
-    // Threshold
-    this.thresholdBindGroup = this.ctx.device.createBindGroup({
-      layout: this.thresholdBGL,
-      entries: [
-        { binding: 0, resource: this.hdrTextureView },
-        { binding: 1, resource: this.linearSampler },
-        { binding: 2, resource: { buffer: this.bloomParamsBuffer } },
-      ],
-    });
+    // Threshold — pair indexed by hdrCurrent (reads current HDR)
+    this.thresholdBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.thresholdBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[0] },
+          { binding: 1, resource: this.linearSampler },
+          { binding: 2, resource: { buffer: this.bloomParamsBuffer } },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.thresholdBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[1] },
+          { binding: 1, resource: this.linearSampler },
+          { binding: 2, resource: { buffer: this.bloomParamsBuffer } },
+        ],
+      }),
+    ];
 
-    // Downsample chain
+    // Downsample chain (no HDR reference — unchanged)
     this.downsampleBindGroups = [];
     for (let i = 1; i < bloomMipLevels; i++) {
       this.downsampleBindGroups.push(this.ctx.device.createBindGroup({
@@ -609,7 +629,7 @@ export class PostProcess {
       }));
     }
 
-    // Upsample chain
+    // Upsample chain (no HDR reference — unchanged)
     this.upsampleBindGroups = [];
     for (let i = bloomMipLevels - 1; i > 0; i--) {
       this.upsampleBindGroups.push(this.ctx.device.createBindGroup({
@@ -622,7 +642,7 @@ export class PostProcess {
       }));
     }
 
-    // Tonemap (uses current adapted luminance texture)
+    // Tonemap — pair indexed by hdrCurrent
     this.rebuildTonemapBindGroup();
 
     // Auto exposure bind groups
@@ -635,29 +655,51 @@ export class PostProcess {
       ? this.adaptedLumViews[this.adaptPingPong]
       : null;
     if (!adaptedView) return;
-    this.tonemapBindGroup = this.ctx.device.createBindGroup({
-      layout: this.tonemapBGL,
-      entries: [
-        { binding: 0, resource: this.hdrTextureView },
-        { binding: 1, resource: this.bloomMipViews[0] },
-        { binding: 2, resource: this.linearSampler },
-        { binding: 3, resource: { buffer: this.tonemapParamsBuffer } },
-        { binding: 4, resource: adaptedView },
-      ],
-    });
+    // Pair indexed by hdrCurrent (reads current HDR)
+    this.tonemapBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.tonemapBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[0] },
+          { binding: 1, resource: this.bloomMipViews[0] },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.tonemapParamsBuffer } },
+          { binding: 4, resource: adaptedView },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.tonemapBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[1] },
+          { binding: 1, resource: this.bloomMipViews[0] },
+          { binding: 2, resource: this.linearSampler },
+          { binding: 3, resource: { buffer: this.tonemapParamsBuffer } },
+          { binding: 4, resource: adaptedView },
+        ],
+      }),
+    ];
   }
 
   private rebuildAutoExposureBindGroups(): void {
     if (!this.adaptedLumViews || this.lumMipViews.length === 0) return;
 
-    // Lum extract: HDR → lumMips[0]
-    this.lumExtractBindGroup = this.ctx.device.createBindGroup({
-      layout: this.lumExtractBGL,
-      entries: [
-        { binding: 0, resource: this.hdrTextureView },
-        { binding: 1, resource: this.linearSampler },
-      ],
-    });
+    // Lum extract: HDR → lumMips[0] — pair indexed by hdrCurrent
+    this.lumExtractBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.lumExtractBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[0] },
+          { binding: 1, resource: this.linearSampler },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.lumExtractBGL,
+        entries: [
+          { binding: 0, resource: this.hdrViews[1] },
+          { binding: 1, resource: this.linearSampler },
+        ],
+      }),
+    ];
 
     // Lum downsample chain: lumMips[i-1] → lumMips[i]
     this.lumDownsampleBindGroups = [];
@@ -784,17 +826,32 @@ export class PostProcess {
 
   private rebuildSSRBindGroup(): void {
     if (!this.ssrNormalView || !this.ssrMaterialView || !this.ssrDepthView) return;
-    this.ssrBindGroup = this.ctx.device.createBindGroup({
-      layout: this.ssrBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.ssrUniformBuffer } },
-        { binding: 1, resource: this.ssrNormalView },
-        { binding: 2, resource: this.ssrMaterialView },
-        { binding: 3, resource: this.ssrDepthView },
-        { binding: 4, resource: this.hdrCopyTextureView },
-        { binding: 5, resource: this.linearSampler },
-      ],
-    });
+    // SSR reads from the "current" HDR (ping-pong read side) and writes to the "other".
+    // Pair indexed by hdrCurrent: BG[i] reads from hdrViews[i].
+    this.ssrBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.ssrBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.ssrUniformBuffer } },
+          { binding: 1, resource: this.ssrNormalView },
+          { binding: 2, resource: this.ssrMaterialView },
+          { binding: 3, resource: this.ssrDepthView },
+          { binding: 4, resource: this.hdrViews[0] },
+          { binding: 5, resource: this.linearSampler },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.ssrBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.ssrUniformBuffer } },
+          { binding: 1, resource: this.ssrNormalView },
+          { binding: 2, resource: this.ssrMaterialView },
+          { binding: 3, resource: this.ssrDepthView },
+          { binding: 4, resource: this.hdrViews[1] },
+          { binding: 5, resource: this.linearSampler },
+        ],
+      }),
+    ];
   }
 
   updateSSR(
@@ -817,28 +874,26 @@ export class PostProcess {
   }
 
   renderSSR(encoder: GPUCommandEncoder): void {
-    if (!this.ssrBindGroup) return;
+    if (!this.ssrBindGroups) return;
 
-    // Copy current HDR content so SSR can read from copy while writing to HDR
-    const w = this.ctx.canvas.width;
-    const h = this.ctx.canvas.height;
-    encoder.copyTextureToTexture(
-      { texture: this.hdrTexture },
-      { texture: this.hdrCopyTexture },
-      [w, h],
-    );
-
+    // Ping-pong: SSR reads from current HDR, writes composited result to the other.
+    // The SSR shader does manual compositing (reads base color from hdrInput at the pixel UV).
+    const bg = this.ssrBindGroups[this.hdrCurrent];
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.hdrTextureView,
-        loadOp: 'load',
+        view: this.hdrOtherView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
         storeOp: 'store',
       }],
     });
     pass.setPipeline(this.ssrPipeline);
-    pass.setBindGroup(0, this.ssrBindGroup);
+    pass.setBindGroup(0, bg);
     pass.draw(3);
     pass.end();
+
+    // Swap: the "other" texture now holds the latest scene
+    this.swapHdr();
   }
 
   updateTimeOfDay(timeOfDay: number): void {
@@ -873,92 +928,96 @@ export class PostProcess {
   }
 
   renderMotionBlur(encoder: GPUCommandEncoder, velocityView: GPUTextureView): void {
-    // Rebuild bind group if velocity view changed (resize)
+    // Rebuild bind group pairs if velocity view changed (resize)
     if (this.motionBlurVelocityView !== velocityView) {
       this.motionBlurVelocityView = velocityView;
-      this.motionBlurBindGroup = null;
+      this.motionBlurBindGroups = [
+        this.ctx.device.createBindGroup({
+          layout: this.motionBlurBGL,
+          entries: [
+            { binding: 0, resource: this.hdrViews[0] },
+            { binding: 1, resource: velocityView },
+            { binding: 2, resource: this.linearSampler },
+            { binding: 3, resource: { buffer: this.motionBlurParamsBuffer } },
+          ],
+        }),
+        this.ctx.device.createBindGroup({
+          layout: this.motionBlurBGL,
+          entries: [
+            { binding: 0, resource: this.hdrViews[1] },
+            { binding: 1, resource: velocityView },
+            { binding: 2, resource: this.linearSampler },
+            { binding: 3, resource: { buffer: this.motionBlurParamsBuffer } },
+          ],
+        }),
+      ];
     }
 
-    // Copy HDR → hdrCopy so we can sample copy while writing to HDR
-    const w = this.ctx.canvas.width;
-    const h = this.ctx.canvas.height;
-    encoder.copyTextureToTexture(
-      { texture: this.hdrTexture },
-      { texture: this.hdrCopyTexture },
-      [w, h],
-    );
-
-    // Rebuild bind group if needed
-    if (!this.motionBlurBindGroup) {
-      this.motionBlurBindGroup = this.ctx.device.createBindGroup({
-        layout: this.motionBlurBGL,
-        entries: [
-          { binding: 0, resource: this.hdrCopyTextureView },
-          { binding: 1, resource: velocityView },
-          { binding: 2, resource: this.linearSampler },
-          { binding: 3, resource: { buffer: this.motionBlurParamsBuffer } },
-        ],
-      });
-    }
-
+    // Ping-pong: read from current, write full result to other
+    const bg = this.motionBlurBindGroups![this.hdrCurrent];
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.hdrTextureView,
-        loadOp: 'load',
+        view: this.hdrOtherView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
         storeOp: 'store',
       }],
     });
     pass.setPipeline(this.motionBlurPipeline);
-    pass.setBindGroup(0, this.motionBlurBindGroup);
+    pass.setBindGroup(0, bg);
     pass.draw(3);
     pass.end();
+
+    this.swapHdr();
   }
 
   renderDoF(encoder: GPUCommandEncoder, depthView: GPUTextureView): void {
-    // Rebuild bind group if depth view changed (resize)
+    // Rebuild bind group pairs if depth view changed (resize)
     if (this.dofDepthView !== depthView) {
       this.dofDepthView = depthView;
-      this.dofBindGroup = null;
+      this.dofBindGroups = [
+        this.ctx.device.createBindGroup({
+          layout: this.dofBGL,
+          entries: [
+            { binding: 0, resource: this.hdrViews[0] },
+            { binding: 1, resource: depthView },
+            { binding: 2, resource: this.linearSampler },
+            { binding: 3, resource: { buffer: this.dofParamsBuffer } },
+          ],
+        }),
+        this.ctx.device.createBindGroup({
+          layout: this.dofBGL,
+          entries: [
+            { binding: 0, resource: this.hdrViews[1] },
+            { binding: 1, resource: depthView },
+            { binding: 2, resource: this.linearSampler },
+            { binding: 3, resource: { buffer: this.dofParamsBuffer } },
+          ],
+        }),
+      ];
     }
 
-    // Copy HDR → hdrCopy so we can sample copy while writing to HDR
-    const w = this.ctx.canvas.width;
-    const h = this.ctx.canvas.height;
-    encoder.copyTextureToTexture(
-      { texture: this.hdrTexture },
-      { texture: this.hdrCopyTexture },
-      [w, h],
-    );
-
-    // Rebuild bind group if needed
-    if (!this.dofBindGroup) {
-      this.dofBindGroup = this.ctx.device.createBindGroup({
-        layout: this.dofBGL,
-        entries: [
-          { binding: 0, resource: this.hdrCopyTextureView },
-          { binding: 1, resource: depthView },
-          { binding: 2, resource: this.linearSampler },
-          { binding: 3, resource: { buffer: this.dofParamsBuffer } },
-        ],
-      });
-    }
-
+    // Ping-pong: read from current, write full result to other
+    const bg = this.dofBindGroups![this.hdrCurrent];
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.hdrTextureView,
-        loadOp: 'load',
+        view: this.hdrOtherView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
         storeOp: 'store',
       }],
     });
     pass.setPipeline(this.dofPipeline);
-    pass.setBindGroup(0, this.dofBindGroup);
+    pass.setBindGroup(0, bg);
     pass.draw(3);
     pass.end();
+
+    this.swapHdr();
   }
 
   renderAutoExposure(encoder: GPUCommandEncoder, dt: number): void {
     if (!Config.data.rendering.autoExposure.enabled) return;
-    if (!this.lumExtractBindGroup || !this.lumAdaptBindGroups || !this.adaptedLumViews) return;
+    if (!this.lumExtractBindGroups || !this.lumAdaptBindGroups || !this.adaptedLumViews) return;
 
     const ae = Config.data.rendering.autoExposure;
 
@@ -982,7 +1041,7 @@ export class PostProcess {
         }],
       });
       pass.setPipeline(this.lumExtractPipeline);
-      pass.setBindGroup(0, this.lumExtractBindGroup);
+      pass.setBindGroup(0, this.lumExtractBindGroups[this.hdrCurrent]);
       pass.draw(3);
       pass.end();
     }
@@ -1043,7 +1102,7 @@ export class PostProcess {
         }],
       });
       pass.setPipeline(this.thresholdPipeline);
-      pass.setBindGroup(0, this.thresholdBindGroup!);
+      pass.setBindGroup(0, this.thresholdBindGroups![this.hdrCurrent]);
       pass.draw(3);
       pass.end();
     }
@@ -1090,7 +1149,7 @@ export class PostProcess {
         }],
       });
       pass.setPipeline(this.tonemapPipeline);
-      pass.setBindGroup(0, this.tonemapBindGroup!);
+      pass.setBindGroup(0, this.tonemapBindGroups![this.hdrCurrent]);
       pass.draw(3);
       pass.end();
     }
@@ -1100,9 +1159,9 @@ export class PostProcess {
     this.createTextures();
     this.rebuildSSRBindGroup();
     // Invalidate motion blur / DoF bind groups (texture views changed)
-    this.motionBlurBindGroup = null;
+    this.motionBlurBindGroups = null;
     this.motionBlurVelocityView = null;
-    this.dofBindGroup = null;
+    this.dofBindGroups = null;
     this.dofDepthView = null;
   }
 }

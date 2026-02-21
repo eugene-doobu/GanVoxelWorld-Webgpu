@@ -42,6 +42,7 @@ async function main() {
   const dayNightCycle = new DayNightCycle();
   const weatherSystem = new WeatherSystem();
   const pipeline = new DeferredPipeline(ctx, dayNightCycle);
+  await pipeline.init(); // Wait for all shader compilations; throws on shader errors
   pipeline.setWeatherSystem(weatherSystem);
   const atlas = new TextureAtlas(ctx);
   pipeline.setAtlasTexture(atlas.texture, atlas.materialTexture, atlas.normalTexture);
@@ -76,24 +77,38 @@ async function main() {
   inspector.addTab('Environment', envTab);
 
   // H key toggles HUD (skip when typing in inputs or inspector is focused)
-  document.addEventListener('keydown', (e) => {
+  const onHudToggle = (e: KeyboardEvent) => {
     if (e.code === 'KeyH' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement)) {
       hud.toggle();
     }
-  });
+  };
+  document.addEventListener('keydown', onHudToggle);
 
   // Reactive config: apply rendering changes immediately
-  Config.onChange((path) => {
+  const onConfigChange: (path: string, value: unknown) => void = (path) => {
     if (path === 'rendering.general.renderDistance') {
       chunkManager.renderDistance = Config.data.rendering.general.renderDistance;
     }
     if (path.startsWith('rendering.bloom.') || path.startsWith('rendering.autoExposure.')) {
       pipeline.updateBloomParams();
     }
-  });
+  };
+  Config.onChange(onConfigChange);
 
   // Responsive canvas
-  window.addEventListener('resize', () => ctx.resize());
+  const onResize = () => ctx.resize();
+  window.addEventListener('resize', onResize);
+
+  // Cleanup function
+  function cleanup() {
+    camera.destroy();
+    inspector.destroy();
+    document.removeEventListener('keydown', onHudToggle);
+    window.removeEventListener('resize', onResize);
+    Config.removeHandler(onConfigChange);
+  }
+  // Expose for potential re-init (not called during normal operation)
+  (window as unknown as Record<string, unknown>).__voxelCleanup = cleanup;
 
   // Game loop
   let lastTime = performance.now();

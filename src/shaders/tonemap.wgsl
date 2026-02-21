@@ -17,20 +17,7 @@ struct TonemapParams {
 @group(0) @binding(3) var<uniform> params: TonemapParams;
 @group(0) @binding(4) var adaptedLumTex: texture_2d<f32>;
 
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let x = f32(i32(vid & 1u)) * 4.0 - 1.0;
-  let y = f32(i32(vid >> 1u)) * 4.0 - 1.0;
-  output.position = vec4<f32>(x, y, 0.0, 1.0);
-  output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-  return output;
-}
+#include "common/fullscreen_vert.wgsl"
 
 // ACES Filmic Tone Mapping (Narkowicz approximation)
 fn acesFilm(x: vec3<f32>) -> vec3<f32> {

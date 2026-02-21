@@ -9,6 +9,8 @@ struct GBufferOutput {
 @group(1) @binding(2) var materialAtlas: texture_2d<f32>;
 @group(1) @binding(3) var normalAtlas: texture_2d<f32>;
 
+#include "common/alpha_cutout.wgsl"
+
 // Face normals: TOP, BOTTOM, NORTH(+Z), SOUTH(-Z), EAST(+X), WEST(-X)
 const FACE_NORMALS = array<vec3<f32>, 6>(
   vec3<f32>(0.0, 1.0, 0.0),
@@ -54,11 +56,7 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
   let blockType = input.normalIndex >> 8u;
 
   // Alpha cutout: leaves (51) and vegetation (80-82) use atlas texture alpha.
-  // Atlas alpha is baked at texture generation time → perfectly stable, no flickering.
-  if (blockType == 51u || (blockType >= 80u && blockType <= 82u)) {
-    let cutoutAlpha = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0).a;
-    if (cutoutAlpha < 0.5) { discard; }
-  }
+  applyCutout(blockType, input.texCoord);
 
   let albedo = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0);
   let mat = textureSampleLevel(materialAtlas, atlasSampler, input.texCoord, 0.0);

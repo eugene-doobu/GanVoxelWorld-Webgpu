@@ -56,16 +56,7 @@ struct PointLightBuffer {
 const PI: f32 = 3.14159265359;
 
 // ====================== Atmospheric Scattering (Fog) ======================
-fn rayleighPhase(cosTheta: f32) -> f32 {
-  return 3.0 / (16.0 * PI) * (1.0 + cosTheta * cosTheta);
-}
-
-fn hgPhase(cosTheta: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  let num = 1.0 - g2;
-  let denom = 4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
-  return num / denom;
-}
+#include "common/phase_functions.wgsl"
 
 fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
   let cosTheta = dot(normalize(viewDir), sunDir);
@@ -92,28 +83,10 @@ fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
 }
 
 // ====================== Fullscreen Vertex ======================
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let x = f32(i32(vid & 1u)) * 4.0 - 1.0;
-  let y = f32(i32(vid >> 1u)) * 4.0 - 1.0;
-  output.position = vec4<f32>(x, y, 0.0, 1.0);
-  output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-  return output;
-}
+#include "common/fullscreen_vert.wgsl"
 
 // ====================== World position reconstruction ======================
-fn reconstructWorldPos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, depth, 1.0);
-  let ndcFlipped = vec4<f32>(ndc.x, -ndc.y, ndc.z, 1.0);
-  let worldH = scene.invViewProj * ndcFlipped;
-  return worldH.xyz / worldH.w;
-}
+#include "common/reconstruct.wgsl"
 
 // ====================== PBR Functions ======================
 
@@ -339,7 +312,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let ao = textureSampleLevel(ssaoTexture, linearSampler, uv, 0.0).r;
 
   // Reconstruct world position
-  let worldPos = reconstructWorldPos(uv, depth);
+  let worldPos = reconstructWorldPos(uv, depth, scene.invViewProj);
   let V = normalize(scene.cameraPos.xyz - worldPos);
   let N = normal;
   let L = normalize(scene.sunDir.xyz);

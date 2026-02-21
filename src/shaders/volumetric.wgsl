@@ -21,13 +21,7 @@ struct ShadowUniforms {
 @group(0) @binding(4) var shadowSampler: sampler_comparison;
 @group(0) @binding(5) var linearSampler: sampler;
 
-const PI: f32 = 3.14159265359;
-
-// Henyey-Greenstein phase function
-fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
-  let g2 = g * g;
-  return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
-}
+#include "common/phase_functions.wgsl"
 
 // Sample shadow map at world position (simplified, single cascade lookup)
 fn sampleShadowAt(worldPos: vec3<f32>) -> f32 {
@@ -63,33 +57,14 @@ fn sampleShadowAt(worldPos: vec3<f32>) -> f32 {
   );
 }
 
-// Reconstruct world position from depth
-fn reconstructWorldPos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, depth, 1.0);
-  let ndcFlipped = vec4<f32>(ndc.x, -ndc.y, ndc.z, 1.0);
-  let worldH = uniforms.invViewProj * ndcFlipped;
-  return worldH.xyz / worldH.w;
-}
+#include "common/reconstruct.wgsl"
 
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let x = f32(i32(vid & 1u)) * 4.0 - 1.0;
-  let y = f32(i32(vid >> 1u)) * 4.0 - 1.0;
-  output.position = vec4<f32>(x, y, 0.0, 1.0);
-  output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-  return output;
-}
+#include "common/fullscreen_vert.wgsl"
 
 // Dual-lobe Henyey-Greenstein: forward scatter + back scatter
 fn dualLobeHG(cosTheta: f32) -> f32 {
-  let forward = henyeyGreenstein(cosTheta, 0.75);
-  let back    = henyeyGreenstein(cosTheta, -0.3);
+  let forward = hgPhase(cosTheta, 0.75);
+  let back    = hgPhase(cosTheta, -0.3);
   return mix(back, forward, 0.7);
 }
 
@@ -116,7 +91,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let seaLevel = uniforms.cameraPos.w;
 
   // Reconstruct world position of pixel
-  let worldPos = reconstructWorldPos(input.uv, depth);
+  let worldPos = reconstructWorldPos(input.uv, depth, uniforms.invViewProj);
   let camPos = uniforms.cameraPos.xyz;
 
   // Ray from camera to pixel

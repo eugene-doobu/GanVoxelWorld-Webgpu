@@ -22,27 +22,9 @@ const BINARY_STEPS: u32 = 5u;
 const THICKNESS: f32 = 0.3;
 const ROUGHNESS_CUTOFF: f32 = 0.5;
 
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
+#include "common/fullscreen_vert.wgsl"
 
-@vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
-  var output: VertexOutput;
-  let x = f32(i32(vid & 1u)) * 4.0 - 1.0;
-  let y = f32(i32(vid >> 1u)) * 4.0 - 1.0;
-  output.position = vec4<f32>(x, y, 0.0, 1.0);
-  output.uv = vec2<f32>(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-  return output;
-}
-
-fn reconstructWorldPos(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, depth, 1.0);
-  let ndcFlipped = vec4<f32>(ndc.x, -ndc.y, ndc.z, 1.0);
-  let worldH = ssr.invViewProjection * ndcFlipped;
-  return worldH.xyz / worldH.w;
-}
+#include "common/reconstruct.wgsl"
 
 fn worldToScreen(worldPos: vec3<f32>) -> vec3<f32> {
   let clip = ssr.viewProjection * vec4<f32>(worldPos, 1.0);
@@ -61,20 +43,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let pixelCoord = vec2<i32>(input.position.xy);
   let screenSize = ssr.screenSize.xy;
 
+  // Base scene color (ping-pong: pass through for non-reflective pixels)
+  let baseColor = textureSampleLevel(hdrInput, linearSampler, input.uv, 0.0);
+
   // Read material roughness
   let materialSample = textureLoad(gMaterial, pixelCoord, 0);
   let roughness = materialSample.r;
   let metallic = materialSample.g;
 
-  // Early exit for rough surfaces
+  // Early exit for rough surfaces — pass through base scene
   if (roughness > ROUGHNESS_CUTOFF) {
-    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    return baseColor;
   }
 
   // Read depth
   let depth = textureLoad(gDepth, pixelCoord, 0);
   if (depth >= 1.0) {
-    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    return baseColor;
   }
 
   // Read normal
@@ -82,7 +67,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let normal = normalize(normalSample.rgb * 2.0 - 1.0);
 
   // Reconstruct world position
-  let worldPos = reconstructWorldPos(input.uv, depth);
+  let worldPos = reconstructWorldPos(input.uv, depth, ssr.invViewProjection);
   let viewDir = normalize(ssr.cameraPos.xyz - worldPos);
 
   // Reflection direction
@@ -100,7 +85,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Ray march in world space, project to screen space each step
   var rayPos = worldPos + reflectDir * 0.1; // offset to avoid self-intersection
 
-  var hitColor = vec4<f32>(0.0);
+  var hitColor = vec3<f32>(0.0);
+  var hitAlpha = 0.0;
   var stepSize = STEP_SIZE;
 
   for (var i = 0u; i < MAX_STEPS; i++) {
@@ -123,7 +109,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Compare depths: ray went behind scene geometry
     if (rayDepth > sceneDepth && sceneDepth > 0.0) {
       // Check thickness: only count as hit if ray is close to surface
-      let hitWorldPos = reconstructWorldPos(rayUV, sceneDepth);
+      let hitWorldPos = reconstructWorldPos(rayUV, sceneDepth, ssr.invViewProjection);
       let diff = distance(rayPos, hitWorldPos);
       if (diff < THICKNESS * stepSize * f32(i + 1u) * 0.5 + THICKNESS) {
         // Binary refinement for precision
@@ -152,9 +138,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
           // Edge fade: fade out reflections near screen edges
           let edgeFade = 1.0 - pow(max(abs(finalUV.x * 2.0 - 1.0), abs(finalUV.y * 2.0 - 1.0)), 4.0);
 
-          let alpha = clamp(edgeFade * roughnessFade, 0.0, 1.0);
-          let tintedColor = reflectedColor * fresnel;
-          hitColor = vec4<f32>(tintedColor, alpha);
+          hitAlpha = clamp(edgeFade * roughnessFade, 0.0, 1.0);
+          hitColor = reflectedColor * fresnel;
         }
         break;
       }
@@ -164,5 +149,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     stepSize *= 1.05;
   }
 
-  return hitColor;
+  // Manual compositing: blend reflection over base scene color (ping-pong)
+  let composited = mix(baseColor.rgb, hitColor, hitAlpha);
+  return vec4<f32>(composited, 1.0);
 }

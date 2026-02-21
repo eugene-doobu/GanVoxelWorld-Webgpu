@@ -2,6 +2,7 @@ import { mat4 } from 'gl-matrix';
 import { Config } from '../config/Config';
 import { WebGPUContext } from './WebGPUContext';
 import { HDR_FORMAT, VELOCITY_FORMAT } from '../constants';
+import { checkShaderCompilation } from './shaderCheck';
 
 import velocityShader from '../shaders/velocity.wgsl?raw';
 import taaResolveShader from '../shaders/taa_resolve.wgsl?raw';
@@ -59,11 +60,16 @@ export class TAA {
 
   // Bind groups (recreated on resize)
   private velocityBindGroup: GPUBindGroup | null = null;
-  private resolveBindGroup: GPUBindGroup | null = null;
+  // Cached resolve bind groups: [taaPingPong][hdrPingPong]
+  // Rebuilt only on resize or when external resources change.
+  private resolveBindGroupCache: [[GPUBindGroup, GPUBindGroup], [GPUBindGroup, GPUBindGroup]] | null = null;
 
   // External textures
   private depthView: GPUTextureView | null = null;
-  private hdrTextureView: GPUTextureView | null = null;
+  private hdrViews: [GPUTextureView, GPUTextureView] | null = null;
+
+  // Shader compilation checks
+  readonly shaderChecks: Promise<void>[] = [];
 
   // Jitter
   private frameIndex = 0;
@@ -114,9 +120,7 @@ export class TAA {
     });
 
     const velocityModule = device.createShaderModule({ code: velocityShader });
-    velocityModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[velocity] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.shaderChecks.push(checkShaderCompilation('velocity', velocityModule));
 
     this.velocityPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.velocityBGL] }),
@@ -141,9 +145,7 @@ export class TAA {
     });
 
     const resolveModule = device.createShaderModule({ code: taaResolveShader });
-    resolveModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[taa_resolve] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.shaderChecks.push(checkShaderCompilation('taa_resolve', resolveModule));
 
     this.resolvePipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.resolveBGL] }),
@@ -201,7 +203,7 @@ export class TAA {
 
     // Invalidate bind groups
     this.velocityBindGroup = null;
-    this.resolveBindGroup = null;
+    this.resolveBindGroupCache = null;
   }
 
   getJitter(width: number, height: number): [number, number] {
@@ -218,38 +220,52 @@ export class TAA {
     ];
   }
 
-  setResources(depthView: GPUTextureView, hdrTextureView: GPUTextureView): void {
+  setResources(depthView: GPUTextureView, hdrView0: GPUTextureView, hdrView1: GPUTextureView): void {
+    // Only invalidate bind groups when resources actually change (resize)
+    const changed = this.depthView !== depthView
+      || !this.hdrViews
+      || this.hdrViews[0] !== hdrView0
+      || this.hdrViews[1] !== hdrView1;
+    if (!changed) return;
     this.depthView = depthView;
-    this.hdrTextureView = hdrTextureView;
+    this.hdrViews = [hdrView0, hdrView1];
     this.velocityBindGroup = null;
-    this.resolveBindGroup = null;
+    this.resolveBindGroupCache = null;
   }
 
   private ensureBindGroups(): void {
-    if (this.velocityBindGroup && this.resolveBindGroup) return;
-    if (!this.depthView || !this.hdrTextureView) return;
+    if (!this.depthView || !this.hdrViews) return;
 
-    this.velocityBindGroup = this.ctx.device.createBindGroup({
-      layout: this.velocityBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.velocityUniformBuffer } },
-        { binding: 1, resource: this.depthView },
-      ],
-    });
+    if (!this.velocityBindGroup) {
+      this.velocityBindGroup = this.ctx.device.createBindGroup({
+        layout: this.velocityBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.velocityUniformBuffer } },
+          { binding: 1, resource: this.depthView },
+        ],
+      });
+    }
 
-    // Read from history (previous resolved frame)
-    const historyReadView = this.pingPong === 0 ? this.historyBView : this.historyAView;
+    if (!this.resolveBindGroupCache) {
+      // Pre-create all 4 resolve bind groups: [taaPingPong][hdrPingPong]
+      const makeResolve = (historyView: GPUTextureView, hdrView: GPUTextureView) =>
+        this.ctx.device.createBindGroup({
+          layout: this.resolveBGL,
+          entries: [
+            { binding: 0, resource: { buffer: this.taaUniformBuffer } },
+            { binding: 1, resource: hdrView },
+            { binding: 2, resource: historyView },
+            { binding: 3, resource: this.velocityTextureView },
+            { binding: 4, resource: this.linearSampler },
+          ],
+        });
 
-    this.resolveBindGroup = this.ctx.device.createBindGroup({
-      layout: this.resolveBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.taaUniformBuffer } },
-        { binding: 1, resource: this.hdrTextureView },
-        { binding: 2, resource: historyReadView },
-        { binding: 3, resource: this.velocityTextureView },
-        { binding: 4, resource: this.linearSampler },
-      ],
-    });
+      // taaPingPong=0: read historyB; taaPingPong=1: read historyA
+      this.resolveBindGroupCache = [
+        [makeResolve(this.historyBView, this.hdrViews[0]), makeResolve(this.historyBView, this.hdrViews[1])],
+        [makeResolve(this.historyAView, this.hdrViews[0]), makeResolve(this.historyAView, this.hdrViews[1])],
+      ];
+    }
   }
 
   updateUniforms(unjitteredViewProj: mat4): void {
@@ -289,22 +305,12 @@ export class TAA {
     pass.end();
   }
 
-  renderResolve(encoder: GPUCommandEncoder): void {
-    // Rebuild resolve bind group each frame because history ping-pong changes
-    if (!this.depthView || !this.hdrTextureView) return;
+  renderResolve(encoder: GPUCommandEncoder, hdrCurrentIndex: number): void {
+    this.ensureBindGroups();
+    if (!this.resolveBindGroupCache) return;
 
-    const historyReadView = this.pingPong === 0 ? this.historyBView : this.historyAView;
-
-    this.resolveBindGroup = this.ctx.device.createBindGroup({
-      layout: this.resolveBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this.taaUniformBuffer } },
-        { binding: 1, resource: this.hdrTextureView },
-        { binding: 2, resource: historyReadView },
-        { binding: 3, resource: this.velocityTextureView },
-        { binding: 4, resource: this.linearSampler },
-      ],
-    });
+    // Select the cached bind group for the current TAA + HDR ping-pong state
+    const bg = this.resolveBindGroupCache[this.pingPong][hdrCurrentIndex];
 
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -315,7 +321,7 @@ export class TAA {
       }],
     });
     pass.setPipeline(this.resolvePipeline);
-    pass.setBindGroup(0, this.resolveBindGroup);
+    pass.setBindGroup(0, bg);
     pass.draw(3);
     pass.end();
   }

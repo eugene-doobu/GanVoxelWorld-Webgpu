@@ -9,15 +9,26 @@ export class InspectorPanel {
   private activeTab: string | null = null;
   private isOpen = false;
 
+  private onToggleClick: () => void;
+  private onF1KeyDown: (e: KeyboardEvent) => void;
+
   constructor() {
     injectStyles();
+
+    this.onToggleClick = () => this.toggle();
+    this.onF1KeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'F1') {
+        e.preventDefault();
+        this.toggle();
+      }
+    };
 
     // Toggle button
     this.toggleBtn = document.createElement('button');
     this.toggleBtn.className = 'inspector-toggle';
     this.toggleBtn.textContent = '\u2699'; // gear icon
     this.toggleBtn.title = 'Settings (F1)';
-    this.toggleBtn.addEventListener('click', () => this.toggle());
+    this.toggleBtn.addEventListener('click', this.onToggleClick);
     document.body.appendChild(this.toggleBtn);
 
     // Panel
@@ -31,12 +42,14 @@ export class InspectorPanel {
     this.panel.appendChild(this.tabBar);
 
     // F1 shortcut
-    document.addEventListener('keydown', (e) => {
-      if (e.code === 'F1') {
-        e.preventDefault();
-        this.toggle();
-      }
-    });
+    document.addEventListener('keydown', this.onF1KeyDown);
+  }
+
+  destroy(): void {
+    this.toggleBtn.removeEventListener('click', this.onToggleClick);
+    document.removeEventListener('keydown', this.onF1KeyDown);
+    this.toggleBtn.remove();
+    this.panel.remove();
   }
 
   addTab(name: string, tab: InspectorTab): void {

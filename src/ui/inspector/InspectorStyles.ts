@@ -109,6 +109,15 @@ const CSS = `
   font-weight: normal; font-size: 11px; padding: 3px 8px;
   background: #363636;
 }
+
+.inspector-field-error {
+  animation: field-error-flash 0.8s ease;
+}
+@keyframes field-error-flash {
+  0%, 100% { background: transparent; }
+  20% { background: rgba(220, 50, 50, 0.35); }
+  50% { background: rgba(220, 50, 50, 0.15); }
+}
 `;
 
 let injected = false;

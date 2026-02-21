@@ -18,6 +18,7 @@ import {
 } from '../constants';
 import type { PointLight } from '../terrain/ChunkManager';
 
+import { checkShaderCompilation } from './shaderCheck';
 import gbufferVertShader from '../shaders/gbuffer.vert.wgsl?raw';
 import gbufferFragShader from '../shaders/gbuffer.frag.wgsl?raw';
 import lightingShader from '../shaders/lighting.wgsl?raw';
@@ -89,7 +90,8 @@ export class DeferredPipeline {
   private waterBindGroupLayout!: GPUBindGroupLayout;
   private waterVertUniformBuffer!: GPUBuffer;
   private waterFragUniformBuffer!: GPUBuffer;
-  private waterBindGroup!: GPUBindGroup;
+  // Water bind groups: pair indexed by hdrCurrent (reads from the "other" HDR texture for refraction)
+  private waterBindGroups: [GPUBindGroup, GPUBindGroup] | null = null;
 
   // Samplers
   private linearSampler!: GPUSampler;
@@ -135,6 +137,9 @@ export class DeferredPipeline {
   // Frame counter for temporal dithering
   private frameIndex = 0;
 
+  // Shader compilation checks — collected during construction, awaited in init()
+  private shaderChecks: Promise<void>[] = [];
+
   constructor(ctx: WebGPUContext, private dayNightCycle: DayNightCycle) {
     this.ctx = ctx;
 
@@ -153,6 +158,19 @@ export class DeferredPipeline {
 
     // Handle resize
     ctx.onResize = () => this.handleResize();
+  }
+
+  /** Await all shader compilation checks. Throws on the first shader error. */
+  async init(): Promise<void> {
+    // Collect shader checks from sub-systems
+    this.shaderChecks.push(...this.taa.shaderChecks);
+    await Promise.all(this.shaderChecks);
+    this.shaderChecks = [];
+  }
+
+  /** Register a shader module for compilation checking. */
+  private checkShader(name: string, module: GPUShaderModule): void {
+    this.shaderChecks.push(checkShaderCompilation(name, module));
   }
 
   private createSamplers(): void {
@@ -196,14 +214,8 @@ export class DeferredPipeline {
 
     const vertModule = device.createShaderModule({ code: gbufferVertShader });
     const fragModule = device.createShaderModule({ code: gbufferFragShader });
-
-    // Check shader compilation
-    vertModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[gbuffer.vert] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
-    fragModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[gbuffer.frag] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.checkShader('gbuffer.vert', vertModule);
+    this.checkShader('gbuffer.frag', fragModule);
 
     const gbufferVertexBufferLayout: GPUVertexBufferLayout = {
       arrayStride: 28,
@@ -327,9 +339,7 @@ export class DeferredPipeline {
     });
 
     const lightingModule = device.createShaderModule({ code: lightingShader });
-    lightingModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[lighting] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.checkShader('lighting', lightingModule);
 
     this.lightingPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({
@@ -381,9 +391,7 @@ export class DeferredPipeline {
     });
 
     const skyModule = device.createShaderModule({ code: skyShader });
-    skyModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[sky] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.checkShader('sky', skyModule);
 
     this.skyPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.skyBindGroupLayout] }),
@@ -413,13 +421,8 @@ export class DeferredPipeline {
 
     const waterVertModule = device.createShaderModule({ code: waterVertShader });
     const waterFragModule = device.createShaderModule({ code: waterFragShader });
-
-    waterVertModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[water.vert] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
-    waterFragModule.getCompilationInfo().then(info => {
-      for (const msg of info.messages) console.warn(`[water.frag] ${msg.type}: ${msg.message} (line ${msg.lineNum})`);
-    });
+    this.checkShader('water.vert', waterVertModule);
+    this.checkShader('water.frag', waterFragModule);
 
     this.waterPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.waterBindGroupLayout] }),
@@ -490,6 +493,7 @@ export class DeferredPipeline {
     });
 
     const weatherModule = device.createShaderModule({ code: weatherShader });
+    this.checkShader('weather', weatherModule);
 
     this.weatherPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.weatherBindGroupLayout] }),
@@ -851,10 +855,10 @@ export class DeferredPipeline {
 
     // 7. Water Forward Pass -> HDR texture (alpha blended)
     if (waterDrawCalls && waterDrawCalls.length > 0) {
-      // Copy current HDR content so water shader can sample for refraction
+      // Copy current HDR → other so water can sample scene for refraction
       encoder.copyTextureToTexture(
         { texture: this.postProcess.hdrTexture },
-        { texture: this.postProcess.hdrCopyTexture },
+        { texture: this.postProcess.hdrOtherTexture },
         [this.ctx.canvas.width, this.ctx.canvas.height],
       );
       this.renderWaterPass(encoder, waterDrawCalls);
@@ -870,9 +874,9 @@ export class DeferredPipeline {
 
     // 9. TAA (velocity + resolve + copy back to HDR)
     if (Config.data.rendering.taa.enabled) {
-      this.taa.setResources(this.gBuffer.depthView, this.postProcess.hdrTextureView);
+      this.taa.setResources(this.gBuffer.depthView, this.postProcess.getHdrView(0), this.postProcess.getHdrView(1));
       this.taa.renderVelocity(encoder);
-      this.taa.renderResolve(encoder);
+      this.taa.renderResolve(encoder, this.postProcess.hdrCurrentIndex);
       this.taa.copyResolvedToHDR(encoder, this.postProcess.hdrTexture);
       this.taa.swapHistory();
       this.taa.storePrevViewProj(this.unjitteredViewProj);
@@ -1018,16 +1022,30 @@ export class DeferredPipeline {
     if (!this.waterBindGroupDirty) return;
     this.waterBindGroupDirty = false;
 
-    this.waterBindGroup = this.ctx.device.createBindGroup({
-      layout: this.waterBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
-        { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
-        { binding: 2, resource: this.postProcess.hdrCopyTextureView },
-        { binding: 3, resource: this.gBuffer.depthView },
-        { binding: 4, resource: this.linearSampler },
-      ],
-    });
+    // Water reads from the "other" HDR texture for refraction.
+    // BG[i] reads from hdrView[1-i]: when hdrCurrent=i, copy current→other then water reads other.
+    this.waterBindGroups = [
+      this.ctx.device.createBindGroup({
+        layout: this.waterBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
+          { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
+          { binding: 2, resource: this.postProcess.getHdrView(1) }, // when current=0, read from 1
+          { binding: 3, resource: this.gBuffer.depthView },
+          { binding: 4, resource: this.linearSampler },
+        ],
+      }),
+      this.ctx.device.createBindGroup({
+        layout: this.waterBindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.waterVertUniformBuffer } },
+          { binding: 1, resource: { buffer: this.waterFragUniformBuffer } },
+          { binding: 2, resource: this.postProcess.getHdrView(0) }, // when current=1, read from 0
+          { binding: 3, resource: this.gBuffer.depthView },
+          { binding: 4, resource: this.linearSampler },
+        ],
+      }),
+    ];
   }
 
   private renderLightingPass(encoder: GPUCommandEncoder): void {
@@ -1078,7 +1096,8 @@ export class DeferredPipeline {
     });
 
     pass.setPipeline(this.waterPipeline);
-    pass.setBindGroup(0, this.waterBindGroup);
+    // Select the bind group matching the current ping-pong state
+    pass.setBindGroup(0, this.waterBindGroups![this.postProcess.hdrCurrentIndex]);
 
     for (const dc of waterDrawCalls) {
       if (dc.indexCount === 0) continue;
@@ -1117,7 +1136,8 @@ export class DeferredPipeline {
 
     const dnc = this.dayNightCycle;
     const sd = dnc.sunDir;
-    const sunHeight = sd[1];
+    // True sun height from timeOfDay (immune to CPU sunDir negation at night)
+    const sunHeight = Math.sin((dnc.timeOfDay - 0.25) * Math.PI * 2);
     const cosTheta = fwd[0] * sd[0] + fwd[1] * sd[1] + fwd[2] * sd[2];
 
     // Rayleigh phase

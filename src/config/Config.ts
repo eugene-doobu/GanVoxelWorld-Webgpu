@@ -190,6 +190,111 @@ export interface AppConfig {
 export type ConfigGroup = 'terrain' | 'rendering' | 'camera' | 'environment';
 export type ChangeHandler = (path: string, value: unknown) => void;
 
+export interface SetResult {
+  success: boolean;
+  error?: string;
+}
+
+interface NumberRule {
+  min: number;
+  max: number;
+}
+
+// Flat map of config path → allowed numeric range
+const VALIDATION_RULES: Record<string, NumberRule> = {
+  // Camera
+  'camera.fov':              { min: 0.1, max: 3.14 },
+  'camera.speed':            { min: 0.1, max: 500 },
+  'camera.fastSpeed':        { min: 0.1, max: 1000 },
+  'camera.mouseSensitivity': { min: 0.0001, max: 0.05 },
+  'camera.near':             { min: 0.01, max: 10 },
+  'camera.far':              { min: 10, max: 100000 },
+  // Rendering - general
+  'rendering.general.renderDistance':  { min: 1, max: 32 },
+  'rendering.general.chunksPerFrame': { min: 1, max: 10 },
+  // Rendering - shadows
+  'rendering.shadows.cascadeCount': { min: 1, max: 8 },
+  'rendering.shadows.mapSize':      { min: 256, max: 8192 },
+  // Rendering - SSAO
+  'rendering.ssao.kernelSize': { min: 4, max: 64 },
+  'rendering.ssao.radius':    { min: 0.01, max: 10 },
+  'rendering.ssao.bias':      { min: 0, max: 1 },
+  // Rendering - bloom
+  'rendering.bloom.mipLevels': { min: 1, max: 10 },
+  'rendering.bloom.threshold': { min: 0, max: 10 },
+  'rendering.bloom.intensity': { min: 0, max: 5 },
+  // Rendering - fog
+  'rendering.fog.startRatio': { min: 0, max: 5 },
+  'rendering.fog.endRatio':   { min: 0, max: 5 },
+  // Rendering - contact shadows
+  'rendering.contactShadows.maxSteps':  { min: 1, max: 64 },
+  'rendering.contactShadows.rayLength': { min: 0.01, max: 10 },
+  'rendering.contactShadows.thickness': { min: 0.01, max: 5 },
+  // Rendering - TAA
+  'rendering.taa.blendFactor': { min: 0, max: 1 },
+  // Rendering - auto exposure
+  'rendering.autoExposure.adaptSpeed':   { min: 0.01, max: 10 },
+  'rendering.autoExposure.keyValue':     { min: 0.01, max: 1 },
+  'rendering.autoExposure.minExposure':  { min: 0.001, max: 10 },
+  'rendering.autoExposure.maxExposure':  { min: 0.01, max: 100 },
+  // Rendering - post process
+  'rendering.postProcess.vignette.intensity':           { min: 0, max: 2 },
+  'rendering.postProcess.chromaticAberration.intensity': { min: 0, max: 0.05 },
+  // Rendering - motion blur / DoF / PCSS
+  'rendering.motionBlur.strength':  { min: 0, max: 2 },
+  'rendering.dof.focusDistance':    { min: 0.1, max: 1000 },
+  'rendering.dof.aperture':         { min: 0.001, max: 1 },
+  'rendering.dof.maxBlur':          { min: 0, max: 50 },
+  'rendering.pcss.lightSize':       { min: 0.1, max: 20 },
+  // Terrain - noise
+  'terrain.noise.octaves':     { min: 1, max: 8 },
+  'terrain.noise.persistence': { min: 0.01, max: 1 },
+  'terrain.noise.lacunarity':  { min: 1, max: 4 },
+  'terrain.noise.scale':       { min: 1, max: 500 },
+  // Terrain - height
+  'terrain.height.seaLevel':       { min: 0, max: 255 },
+  'terrain.height.minHeight':      { min: 1, max: 255 },
+  'terrain.height.maxHeight':      { min: 1, max: 255 },
+  'terrain.height.dirtLayerDepth': { min: 1, max: 20 },
+  // Terrain - biomes
+  'terrain.biomes.temperatureScale':     { min: 10, max: 2000 },
+  'terrain.biomes.humidityScale':        { min: 10, max: 2000 },
+  'terrain.biomes.continentalnessScale': { min: 10, max: 2000 },
+  'terrain.biomes.heightVariationScale': { min: 1, max: 200 },
+  'terrain.biomes.oceanThreshold':       { min: 0, max: 1 },
+  // Terrain - caves
+  'terrain.caves.count':     { min: 0, max: 50 },
+  'terrain.caves.minLength': { min: 1, max: 500 },
+  'terrain.caves.maxLength': { min: 1, max: 500 },
+  'terrain.caves.minRadius': { min: 0.5, max: 10 },
+  'terrain.caves.maxRadius': { min: 0.5, max: 20 },
+  'terrain.caves.minY':      { min: 0, max: 255 },
+  'terrain.caves.maxY':      { min: 0, max: 255 },
+  // Terrain - trees
+  'terrain.trees.perChunk':       { min: 0, max: 20 },
+  'terrain.trees.minTrunkHeight': { min: 1, max: 20 },
+  'terrain.trees.maxTrunkHeight': { min: 1, max: 30 },
+  'terrain.trees.leafDecayChance': { min: 0, max: 1 },
+  // Environment
+  'environment.dayDurationSeconds': { min: 10, max: 36000 },
+  'environment.cloudCoverage':      { min: 0, max: 1 },
+  'environment.cloud.coverage':         { min: 0, max: 1 },
+  'environment.cloud.baseNoiseScale':   { min: 0.0001, max: 0.1 },
+  'environment.cloud.extinction':       { min: 0.01, max: 5 },
+  'environment.cloud.multiScatterFloor': { min: 0, max: 1 },
+  'environment.cloud.detailStrength':    { min: 0, max: 1 },
+};
+
+// Cross-property constraints: [pathA, pathB] where A must be < B
+const CROSS_CONSTRAINTS: [string, string][] = [
+  ['terrain.height.minHeight', 'terrain.height.maxHeight'],
+  ['terrain.trees.minTrunkHeight', 'terrain.trees.maxTrunkHeight'],
+  ['terrain.caves.minLength', 'terrain.caves.maxLength'],
+  ['terrain.caves.minRadius', 'terrain.caves.maxRadius'],
+  ['terrain.caves.minY', 'terrain.caves.maxY'],
+  ['rendering.autoExposure.minExposure', 'rendering.autoExposure.maxExposure'],
+];
+
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
   const keys = path.split('.');
   let current: unknown = obj;
@@ -324,17 +429,60 @@ class ConfigManager {
     return getNestedValue(this.data as unknown as Record<string, unknown>, path);
   }
 
-  set(path: string, value: unknown): void {
-    // Validate type matches existing value
+  set(path: string, value: unknown): SetResult {
+    // Type validation
     const existing = this.get(path);
     if (existing !== undefined) {
-      if (typeof existing === 'number' && (typeof value !== 'number' || Number.isNaN(value as number))) {
-        console.warn(`[Config] Rejected set("${path}", ${value}): expected number`);
-        return;
+      if (typeof existing === 'number') {
+        if (typeof value !== 'number' || !Number.isFinite(value as number)) {
+          return { success: false, error: `"${path}": expected finite number, got ${value}` };
+        }
       }
       if (typeof existing === 'boolean' && typeof value !== 'boolean') {
-        console.warn(`[Config] Rejected set("${path}", ${value}): expected boolean`);
-        return;
+        return { success: false, error: `"${path}": expected boolean, got ${typeof value}` };
+      }
+    }
+
+    // Range validation
+    if (typeof value === 'number') {
+      const rule = VALIDATION_RULES[path];
+      if (rule) {
+        if (value < rule.min || value > rule.max) {
+          return { success: false, error: `"${path}": ${value} out of range [${rule.min}, ${rule.max}]` };
+        }
+      }
+    }
+
+    // Cross-property constraints
+    if (typeof value === 'number') {
+      for (const [minPath, maxPath] of CROSS_CONSTRAINTS) {
+        if (path === minPath) {
+          const maxVal = this.get(maxPath);
+          if (typeof maxVal === 'number' && value > maxVal) {
+            return { success: false, error: `"${path}": ${value} must be <= ${maxPath} (${maxVal})` };
+          }
+        } else if (path === maxPath) {
+          const minVal = this.get(minPath);
+          if (typeof minVal === 'number' && value < minVal) {
+            return { success: false, error: `"${path}": ${value} must be >= ${minPath} (${minVal})` };
+          }
+        }
+      }
+    }
+
+    // Cascade splits ascending check
+    if (path.startsWith('rendering.shadows.cascadeSplits')) {
+      const splits = [...(this.data.rendering.shadows.cascadeSplits)];
+      // Apply the new value to a copy
+      const match = path.match(/cascadeSplits\.(\d+)$/);
+      if (match) {
+        const idx = parseInt(match[1]);
+        splits[idx] = value as number;
+        for (let i = 1; i < splits.length; i++) {
+          if (splits[i] <= splits[i - 1]) {
+            return { success: false, error: `cascadeSplits must be ascending: [${splits.join(', ')}]` };
+          }
+        }
       }
     }
 
@@ -345,6 +493,7 @@ class ConfigManager {
       handler(path, value);
     }
     this.scheduleSave();
+    return { success: true };
   }
 
   onChange(handler: ChangeHandler): void {

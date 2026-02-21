@@ -13,9 +13,14 @@ export class SSAO {
   blurredTexture!: GPUTexture;
   blurredTextureView!: GPUTextureView;
 
+  private blurIntermediateTexture!: GPUTexture;
+  private blurIntermediateTextureView!: GPUTextureView;
+
   private noiseTexture!: GPUTexture;
   private noiseTextureView!: GPUTextureView;
   private uniformBuffer!: GPUBuffer;
+  private blurHDirBuffer!: GPUBuffer;
+  private blurVDirBuffer!: GPUBuffer;
 
   private ssaoPipeline!: GPURenderPipeline;
   private ssaoBindGroupLayout!: GPUBindGroupLayout;
@@ -23,7 +28,8 @@ export class SSAO {
 
   private blurPipeline!: GPURenderPipeline;
   private blurBindGroupLayout!: GPUBindGroupLayout;
-  private blurBindGroup!: GPUBindGroup | null;
+  private blurHBindGroup!: GPUBindGroup | null;
+  private blurVBindGroup!: GPUBindGroup | null;
 
   private pointSampler!: GPUSampler;
   private linearSampler!: GPUSampler;
@@ -118,6 +124,19 @@ export class SSAO {
 
     // Write kernel samples at offset 128 (after 2 mat4s)
     this.ctx.device.queue.writeBuffer(this.uniformBuffer, 128, kernelData);
+
+    // Blur direction uniform buffers (vec2<f32> = 8 bytes, padded to 16 for alignment)
+    this.blurHDirBuffer = this.ctx.device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.ctx.device.queue.writeBuffer(this.blurHDirBuffer, 0, new Float32Array([1, 0, 0, 0]));
+
+    this.blurVDirBuffer = this.ctx.device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.ctx.device.queue.writeBuffer(this.blurVDirBuffer, 0, new Float32Array([0, 1, 0, 0]));
   }
 
   updateProjection(projection: Float32Array, invProjection: Float32Array): void {
@@ -173,6 +192,7 @@ export class SSAO {
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
 
@@ -191,6 +211,7 @@ export class SSAO {
 
   createTextures(): void {
     if (this.ssaoTexture) this.ssaoTexture.destroy();
+    if (this.blurIntermediateTexture) this.blurIntermediateTexture.destroy();
     if (this.blurredTexture) this.blurredTexture.destroy();
 
     this.halfWidth = Math.max(1, Math.floor(this.ctx.canvas.width / 2));
@@ -203,6 +224,13 @@ export class SSAO {
     });
     this.ssaoTextureView = this.ssaoTexture.createView();
 
+    this.blurIntermediateTexture = this.ctx.device.createTexture({
+      size: [this.halfWidth, this.halfHeight],
+      format: 'r8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.blurIntermediateTextureView = this.blurIntermediateTexture.createView();
+
     this.blurredTexture = this.ctx.device.createTexture({
       size: [this.halfWidth, this.halfHeight],
       format: 'r8unorm',
@@ -212,7 +240,8 @@ export class SSAO {
 
     // Invalidate bind groups
     this.ssaoBindGroup = null;
-    this.blurBindGroup = null;
+    this.blurHBindGroup = null;
+    this.blurVBindGroup = null;
   }
 
   private ensureBindGroups(depthView: GPUTextureView, normalView: GPUTextureView): void {
@@ -229,12 +258,25 @@ export class SSAO {
       ],
     });
 
-    this.blurBindGroup = this.ctx.device.createBindGroup({
+    // Horizontal blur: reads SSAO output, writes to intermediate
+    this.blurHBindGroup = this.ctx.device.createBindGroup({
       layout: this.blurBindGroupLayout,
       entries: [
         { binding: 0, resource: this.ssaoTextureView },
         { binding: 1, resource: depthView },
         { binding: 2, resource: this.linearSampler },
+        { binding: 3, resource: { buffer: this.blurHDirBuffer } },
+      ],
+    });
+
+    // Vertical blur: reads intermediate, writes to final blurred output
+    this.blurVBindGroup = this.ctx.device.createBindGroup({
+      layout: this.blurBindGroupLayout,
+      entries: [
+        { binding: 0, resource: this.blurIntermediateTextureView },
+        { binding: 1, resource: depthView },
+        { binding: 2, resource: this.linearSampler },
+        { binding: 3, resource: { buffer: this.blurVDirBuffer } },
       ],
     });
   }
@@ -256,8 +298,22 @@ export class SSAO {
     ssaoPass.draw(3);
     ssaoPass.end();
 
-    // Blur pass
-    const blurPass = encoder.beginRenderPass({
+    // Horizontal blur pass: SSAO output → intermediate
+    const blurHPass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.blurIntermediateTextureView,
+        clearValue: { r: 1, g: 1, b: 1, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    blurHPass.setPipeline(this.blurPipeline);
+    blurHPass.setBindGroup(0, this.blurHBindGroup!);
+    blurHPass.draw(3);
+    blurHPass.end();
+
+    // Vertical blur pass: intermediate → final blurred output
+    const blurVPass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.blurredTextureView,
         clearValue: { r: 1, g: 1, b: 1, a: 1 },
@@ -265,10 +321,10 @@ export class SSAO {
         storeOp: 'store',
       }],
     });
-    blurPass.setPipeline(this.blurPipeline);
-    blurPass.setBindGroup(0, this.blurBindGroup!);
-    blurPass.draw(3);
-    blurPass.end();
+    blurVPass.setPipeline(this.blurPipeline);
+    blurVPass.setBindGroup(0, this.blurVBindGroup!);
+    blurVPass.draw(3);
+    blurVPass.end();
   }
 
   resize(): void {
