@@ -1,6 +1,12 @@
 // ======================== Water Fragment Shader ========================
-// Beer-Lambert RGB absorption, screen-space refraction with chromatic dispersion,
-// Snell's window, edge foam, Fresnel reflection with scene-based reflections
+// Physical water rendering: SSR reflections (blocks + sky/clouds),
+// procedural refraction, Fresnel compositing, Snell's window, edge foam
+//
+// sceneColorTex 사용 규칙 (SSAO artifact 방지):
+//   - 굴절(아래 보기): 절대 금지 → procedural 색상만 사용
+//   - SSR 반사(ray-march hit): OK → 수면 위 지오메트리의 SSAO는 로컬하게 올바름
+//   - 하늘/구름 반사(depth>0.999): OK → 하늘 픽셀에는 SSAO 없음
+//   - 수중 Snell's window: OK → 위를 올려다보는 것이므로 정상
 
 struct FragUniforms {
   cameraPos: vec3f,
@@ -18,6 +24,8 @@ struct FragUniforms {
   pad0: f32,
   pad1: f32,
   pad2: f32,
+  viewProjection: mat4x4f,
+  invViewProjection: mat4x4f,
 }
 
 @group(0) @binding(1) var<uniform> frag: FragUniforms;
@@ -50,7 +58,6 @@ fn hash2d(p: vec2f) -> f32 {
 fn smoothNoise(p: vec2f) -> f32 {
   let i = floor(p);
   let f = fract(p);
-  // Quintic interpolation for smoother derivatives
   let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 
   let a = hash2d(i);
@@ -61,12 +68,10 @@ fn smoothNoise(p: vec2f) -> f32 {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-// FBM with 4 octaves — produces organic, non-repeating height field
 fn waterFBM(p: vec2f) -> f32 {
   var value = 0.0;
   var amplitude = 0.5;
   var pos = p;
-  // Rotation matrix per octave to decorrelate layers
   let rot = mat2x2f(0.8, 0.6, -0.6, 0.8);
 
   for (var i = 0; i < 4; i = i + 1) {
@@ -77,23 +82,16 @@ fn waterFBM(p: vec2f) -> f32 {
   return value;
 }
 
-// Water normal via finite-difference of FBM height field
-// This produces completely organic, non-repeating normals
 fn waterNormal(pos: vec3f, t: f32) -> vec3f {
-  let eps = 0.08; // finite difference step
-  let strength = 0.35; // normal intensity
+  let eps = 0.08;
+  let strength = 0.35;
 
-  // Animate: flow in two directions with different speeds
   let flow1 = vec2f(t * 0.4, t * 0.3);
   let flow2 = vec2f(-t * 0.25, t * 0.35);
-
-  // Two FBM layers at different scales and flow directions
   let scale1 = 0.8;
   let scale2 = 1.6;
-
   let uv = pos.xz;
 
-  // Sample heights for finite difference
   let h00 = waterFBM(uv * scale1 + flow1) * 0.7
            + waterFBM(uv * scale2 + flow2) * 0.3;
   let h10 = waterFBM((uv + vec2f(eps, 0.0)) * scale1 + flow1) * 0.7
@@ -107,36 +105,97 @@ fn waterNormal(pos: vec3f, t: f32) -> vec3f {
   return normalize(vec3f(-dhdx, 1.0, -dhdz));
 }
 
-// Approximate screen-space reflection for water
-fn waterReflection(screenUV: vec2f, worldPos: vec3f, N: vec3f, V: vec3f) -> vec4f {
+// ---- SSR ----
+
+// Project world position → screen UV + NDC depth
+fn worldToScreen(wp: vec3f) -> vec3f {
+  let clip = frag.viewProjection * vec4f(wp, 1.0);
+  // Behind camera guard
+  if (clip.w <= 0.0) { return vec3f(-1.0, -1.0, 0.0); }
+  let ndc = clip.xyz / clip.w;
+  // WebGPU framebuffer: (0,0) = top-left, Y flipped from NDC
+  let uv = vec2f(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+  return vec3f(uv, ndc.z);
+}
+
+// SSR ray march — returns (reflectedColor, confidence)
+// Only hits above-water geometry → sceneColorTex safe (SSAO locally correct)
+fn waterSSR(worldPos: vec3f, N: vec3f, V: vec3f) -> vec4f {
   let R = reflect(-V, N);
-  if (R.y < 0.05) { return vec4f(0.0); }
 
-  // Planar reflection: offset UV based on normal perturbation
-  let NdotV = max(dot(N, V), 0.001);
-  let reflectOffset = N.xz * 0.04 / NdotV;
-  let heightAboveWater = max(worldPos.y - frag.waterLevel, 0.0);
+  // Skip downward / nearly-horizontal reflections
+  if (R.y < 0.02) { return vec4f(0.0); }
 
-  let reflectUV = vec2f(
-    screenUV.x + reflectOffset.x,
-    screenUV.y - abs(reflectOffset.y) - heightAboveWater * 0.003
-  );
+  // --- Parameters ---
+  let THICKNESS = 0.5;  // world-space units (compared in linear depth)
 
-  if (reflectUV.x < 0.01 || reflectUV.x > 0.99 || reflectUV.y < 0.01 || reflectUV.y > 0.99) {
-    return vec4f(0.0);
+  var rayPos = worldPos;
+  var prevRayPos = rayPos;
+  var stepSize = 0.4;
+  var hit = false;
+  var hitUV = vec2f(0.0);
+
+  // --- Linear march ---
+  for (var i = 0; i < 48; i = i + 1) {
+    prevRayPos = rayPos;
+    rayPos += R * stepSize;
+    stepSize *= 1.08;
+
+    let scr = worldToScreen(rayPos);
+
+    // Off-screen → stop
+    if (scr.x < 0.0 || scr.x > 1.0 || scr.y < 0.0 || scr.y > 1.0) { break; }
+
+    let sceneDepthRaw = textureLoad(sceneDepthTex, vec2i(scr.xy * frag.screenSize), 0);
+
+    // Sky pixel (depth ≈ 1.0) → no solid geometry, skip
+    if (sceneDepthRaw > 0.999) { continue; }
+
+    // Compare in LINEAR depth (world-space units)
+    let linearRay = linearizeDepth(scr.z);
+    let linearScene = linearizeDepth(sceneDepthRaw);
+    let diff = linearRay - linearScene;
+
+    if (diff > 0.0 && diff < THICKNESS) {
+      // --- Binary refinement (lo/hi bisection) ---
+      var lo = prevRayPos;
+      var hi = rayPos;
+      for (var j = 0; j < 5; j = j + 1) {
+        let mid = (lo + hi) * 0.5;
+        let ms = worldToScreen(mid);
+        let md = textureLoad(sceneDepthTex, vec2i(ms.xy * frag.screenSize), 0);
+        if (linearizeDepth(ms.z) > linearizeDepth(md)) {
+          hi = mid;  // ray behind surface → move backward
+        } else {
+          lo = mid;  // ray in front → move forward
+        }
+      }
+      let hitScr = worldToScreen((lo + hi) * 0.5);
+      hitUV = hitScr.xy;
+      hit = true;
+      break;
+    }
   }
 
-  let reflectedColor = textureSampleLevel(sceneColorTex, texSampler, reflectUV, 0.0).rgb;
+  if (!hit) { return vec4f(0.0); }
 
-  // Edge + distance fade
-  let edgeFade = smoothstep(0.0, 0.05, reflectUV.x)
-               * smoothstep(1.0, 0.95, reflectUV.x)
-               * smoothstep(0.0, 0.05, reflectUV.y)
-               * smoothstep(1.0, 0.95, reflectUV.y);
-  let viewDist = length(frag.cameraPos - worldPos);
-  let distFade = 1.0 - smoothstep(30.0, 80.0, viewDist);
+  // --- Confidence (fade-outs) ---
+  // Screen-edge fade (5% margin)
+  let edgeFade = smoothstep(0.0, 0.05, hitUV.x)
+               * smoothstep(1.0, 0.95, hitUV.x)
+               * smoothstep(0.0, 0.05, hitUV.y)
+               * smoothstep(1.0, 0.95, hitUV.y);
+  // Distance fade (40–80 world units)
+  let rayDist = length(rayPos - worldPos);
+  let distFade = 1.0 - smoothstep(40.0, 80.0, rayDist);
+  // Direction fade (nearly-horizontal reflections less reliable)
+  let dirFade = smoothstep(0.02, 0.15, R.y);
 
-  return vec4f(reflectedColor, edgeFade * distFade);
+  let confidence = edgeFade * distFade * dirFade;
+
+  // Sample scene color at geometrically-correct hit position
+  let reflectedColor = textureSampleLevel(sceneColorTex, texSampler, hitUV, 0.0).rgb;
+  return vec4f(reflectedColor, confidence);
 }
 
 @fragment
@@ -163,14 +222,11 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let specular = frag.sunColor * frag.sunIntensity
     * (pow(sunReflect, 512.0) * 1.5 + pow(sunReflect, 64.0) * 0.1);
 
-  // Sky reflection color (analytical fallback)
+  // ==================== Analytical Sky (gradient fallback) ====================
   let skyGradient = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
   let horizonColor = mix(vec3f(0.015, 0.02, 0.035), vec3f(0.35, 0.45, 0.6), dayFactor);
   let zenithColor = mix(vec3f(0.005, 0.008, 0.025), vec3f(0.15, 0.3, 0.65), dayFactor);
-  let skyColor = mix(horizonColor, zenithColor, skyGradient);
-
-  // Pure analytical sky reflection only (no scene sampling to avoid SSAO artifacts)
-  let reflection = skyColor + specular;
+  let analyticalSky = mix(horizonColor, zenithColor, skyGradient);
 
   let deepColor = mix(vec3f(0.0, 0.01, 0.03), vec3f(0.0, 0.04, 0.12), dayFactor);
 
@@ -179,6 +235,7 @@ fn main(input: FragInput) -> @location(0) vec4f {
 
   if (isUnderwater) {
     // ==================== UNDERWATER VIEW ====================
+    // sceneColorTex OK — looking up through water surface, SSAO is natural
     let aboveScene = textureSampleLevel(sceneColorTex, texSampler, screenUV, 0.0).rgb;
     let cosAngle = abs(dot(N, V));
     let snellsWindow = smoothstep(0.55, 0.75, cosAngle);
@@ -193,28 +250,52 @@ fn main(input: FragInput) -> @location(0) vec4f {
 
   } else {
     // ==================== ABOVE-WATER VIEW ====================
-    // DEBUG: minimal mode — only flat blue + waterDepth visualization
-    // No refraction, no foam, no fresnel, no reflection
-    // This isolates whether circles come from the water shader or post-processing
 
-    // Procedural underwater color based on depth (no scene sampling = no SSAO artifacts)
+    // --- Refraction (PROCEDURAL ONLY — no sceneColorTex, SSAO artifact 방지) ---
     let shallowColor = mix(vec3f(0.0, 0.15, 0.25), vec3f(0.05, 0.25, 0.35), dayFactor);
-    color = mix(shallowColor, deepColor, smoothstep(0.0, 5.0, waterDepth));
+    let refraction = mix(shallowColor, deepColor, smoothstep(0.0, 5.0, waterDepth));
 
-    // Edge foam
+    // --- Reflection ---
+    // 1) SSR ray-march: blocks/terrain (sceneColorTex OK — above-water SSAO correct)
+    let ssrResult = waterSSR(input.worldPos, N, V);
+
+    // 2) Sky/cloud fallback: sample sceneColorTex at sky pixels (depth>0.999 = no SSAO)
+    //    Try several distances along R — R*500 alone often projects behind camera
+    var envReflection = analyticalSky;
+    var foundSky = false;
+    for (var sd = 1; sd <= 5; sd = sd + 1) {
+      let dist = f32(sd) * 50.0;
+      let skyPt = input.worldPos + R * dist;
+      let skyScr = worldToScreen(skyPt);
+      if (skyScr.x > 0.01 && skyScr.x < 0.99 && skyScr.y > 0.01 && skyScr.y < 0.99) {
+        let skyD = textureLoad(sceneDepthTex, vec2i(skyScr.xy * frag.screenSize), 0);
+        if (skyD > 0.999) {
+          // Sky pixel — safe to sample (actual sky shader output including clouds, no SSAO)
+          envReflection = textureSampleLevel(sceneColorTex, texSampler, skyScr.xy, 0.0).rgb;
+          foundSky = true;
+          break;
+        }
+      }
+    }
+
+    // 3) Blend: SSR geometry hit wins over sky fallback
+    let reflection = mix(envReflection, ssrResult.rgb, ssrResult.a) + specular;
+
+    // --- Fresnel compositing ---
+    let NdotV = max(dot(N, V), 0.0);
+    let F0 = 0.04;
+    let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+    // Deep water: can't see through → surface reflection dominates
+    let depthBoost = smoothstep(0.0, 3.0, waterDepth) * 0.15;
+    let finalFresnel = clamp(fresnel + depthBoost, 0.0, 0.85);
+    color = mix(refraction, reflection, finalFresnel);
+
+    // --- Edge foam ---
     let foamLine = smoothstep(0.5, 0.0, waterDepth);
     let foamWave = sin(input.worldPos.x * 8.0 + frag.time * 2.0) * 0.5 + 0.5;
     let foamWave2 = sin(input.worldPos.z * 6.0 + frag.time * 1.5) * 0.5 + 0.5;
     let foam = foamLine * (0.5 + 0.5 * foamWave * foamWave2) * dayFactor;
     color += vec3f(foam * 0.7, foam * 0.75, foam * 0.8);
-
-    // Fresnel reflection
-    let NdotV = max(dot(N, V), 0.0);
-    let F0 = 0.08;
-    let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 4.0);
-    let depthReflectBoost = smoothstep(0.0, 3.0, waterDepth) * 0.15;
-    let finalFresnel = clamp(fresnel + depthReflectBoost, 0.0, 1.0);
-    color = mix(color, reflection, finalFresnel);
 
     alpha = 1.0;
   }

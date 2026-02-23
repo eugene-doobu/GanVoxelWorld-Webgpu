@@ -34,8 +34,8 @@ const CAMERA_UNIFORM_SIZE = 112;
 
 // Water vertex uniform: viewProjection(64) + time(4) + pad(12) = 80 bytes
 const WATER_VERT_UNIFORM_SIZE = 80;
-// Water fragment uniform: cameraPos(12)+time(4) + sunDir(12)+sunIntensity(4) + sunColor(12)+nearPlane(4) + fogColor(12)+farPlane(4) + fogStart(4)+fogEnd(4)+screenSize(8) + waterLevel(4)+pad(12) = 96 bytes
-const WATER_FRAG_UNIFORM_SIZE = 96;
+// Water fragment uniform: cameraPos(12)+time(4) + sunDir(12)+sunIntensity(4) + sunColor(12)+nearPlane(4) + fogColor(12)+farPlane(4) + fogStart(4)+fogEnd(4)+screenSize(8) + waterLevel(4)+pad(12) + viewProjection(64) + invViewProjection(64) = 224 bytes
+const WATER_FRAG_UNIFORM_SIZE = 224;
 
 // Weather uniform: viewProjection(64) + cameraPos(16) + params(16) = 96 bytes
 const WEATHER_UNIFORM_SIZE = 96;
@@ -777,6 +777,10 @@ export class DeferredPipeline {
     wfF32[21] = 0; // pad
     wfF32[22] = 0; // pad
     wfF32[23] = 0; // pad
+    // viewProjection (unjittered) at offset 24 (bytes 96-159) — for SSR reprojection
+    wfF32.set(this.unjitteredViewProj as Float32Array, 24);
+    // invViewProjection at offset 40 (bytes 160-223) — for world position reconstruction
+    wfF32.set(this.invVP as Float32Array, 40);
     this.ctx.device.queue.writeBuffer(this.waterFragUniformBuffer, 0, wfF32);
 
     // Update weather uniforms (jittered viewProj for forward pass)
