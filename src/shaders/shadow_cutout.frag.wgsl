@@ -12,5 +12,9 @@ struct FragInput {
 @fragment
 fn main(input: FragInput) {
   let blockType = input.normalIndex >> 8u;
+
+  // Cutout blocks (leaves/veg) use direct atlas UV, but in shadow pass they
+  // always come through the cutout pipeline which only renders cutout blocks.
+  // These blocks are emitted with atlas UV (not tiled), so use texCoord directly.
   applyCutout(blockType, input.texCoord);
 }

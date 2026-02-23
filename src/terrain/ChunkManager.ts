@@ -12,6 +12,7 @@ import { buildChunkMesh, ChunkNeighbors, MeshData } from '../meshing/MeshBuilder
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
 import { Config } from '../config/Config';
 import { getBlockData } from './BlockTypes';
+import { IndirectRenderer } from '../renderer/IndirectRenderer';
 
 const enum ChunkState {
   QUEUED,
@@ -58,6 +59,11 @@ export class ChunkManager {
   // Frustum planes for culling (pre-allocated)
   private frustumPlanes: Float32Array[] = Array.from({ length: 6 }, () => new Float32Array(4));
 
+  // Indirect renderer for GPU-driven rendering
+  private indirectRenderer: IndirectRenderer;
+  // Separate IndirectRenderer for vegetation (different pipeline)
+  private vegIndirectRenderer: IndirectRenderer;
+
   constructor(ctx: WebGPUContext, seed: number) {
     this.ctx = ctx;
     this.terrainGen = new TerrainGenerator(seed);
@@ -66,12 +72,33 @@ export class ChunkManager {
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
     this.vegGen = new VegetationGenerator(seed, this.terrainGen);
     this.waterSim = new WaterSimulator();
+    this.indirectRenderer = new IndirectRenderer(ctx.device);
+    this.vegIndirectRenderer = new IndirectRenderer(ctx.device);
   }
 
+  /** Shader compilation checks from indirect renderers */
+  get shaderChecks(): Promise<void>[] {
+    return [...this.indirectRenderer.shaderChecks, ...this.vegIndirectRenderer.shaderChecks];
+  }
+
+  /** Access IndirectRenderer for rendering */
+  get solidIndirect(): IndirectRenderer { return this.indirectRenderer; }
+  get vegetationIndirect(): IndirectRenderer { return this.vegIndirectRenderer; }
+  getFrustumPlanes(): Float32Array[] { return this.frustumPlanes; }
+
   regenerate(seed: number): void {
-    // Destroy all chunks
+    // Free all mega buffer allocations
     for (const entry of this.chunks.values()) {
-      entry.chunk.destroyGPU();
+      const c = entry.chunk;
+      if (c.solidAlloc) {
+        this.indirectRenderer.freeChunk(c.solidAlloc);
+        c.solidAlloc = null;
+      }
+      if (c.vegMegaAlloc) {
+        this.vegIndirectRenderer.freeChunk(c.vegMegaAlloc);
+        c.vegMegaAlloc = null;
+      }
+      c.destroyGPU();
     }
     this.chunks.clear();
     this.loadQueue = [];
@@ -134,31 +161,25 @@ export class ChunkManager {
       this.vegGen.generate(entry.chunk);
       this.waterSim.generate(entry.chunk);
 
+      // Compute occupancy bitmask for sub-block skip optimization
+      entry.chunk.computeOccupancy();
+
       // Build mesh
       entry.state = ChunkState.MESHING;
       const neighbors = this.getNeighbors(cx, cz);
       const meshData = buildChunkMesh(entry.chunk, neighbors);
 
-      if (meshData.indexCount > 0) {
-        entry.chunk.vertexBuffer = this.ctx.device.createBuffer({
-          size: meshData.vertices.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
-        this.ctx.device.queue.writeBuffer(entry.chunk.vertexBuffer, 0, meshData.vertices.buffer as ArrayBuffer);
+      // Upload solid mesh to mega buffer
+      this.uploadSolidMesh(entry.chunk, meshData);
 
-        entry.chunk.indexBuffer = this.ctx.device.createBuffer({
-          size: meshData.indices.byteLength,
-          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-        });
-        this.ctx.device.queue.writeBuffer(entry.chunk.indexBuffer, 0, meshData.indices.buffer as ArrayBuffer);
-        entry.chunk.indexCount = meshData.indexCount;
-      }
-
-      // Upload water mesh
+      // Upload water mesh (per-chunk buffer, small mesh)
       this.uploadWaterMesh(entry.chunk, meshData);
 
-      // Upload vegetation mesh
+      // Upload vegetation mesh to mega buffer
       this.uploadVegetationMesh(entry.chunk, meshData);
+
+      // Compress block data to save RAM (uniform sub-blocks → 1 byte)
+      entry.chunk.compress();
 
       entry.state = ChunkState.READY;
       processed++;
@@ -187,6 +208,15 @@ export class ChunkManager {
       const dx = entry.chunk.chunkX - camChunkX;
       const dz = entry.chunk.chunkZ - camChunkZ;
       if (dx * dx + dz * dz > unloadDist * unloadDist) {
+        // Free mega buffer allocations
+        if (entry.chunk.solidAlloc) {
+          this.indirectRenderer.freeChunk(entry.chunk.solidAlloc);
+          entry.chunk.solidAlloc = null;
+        }
+        if (entry.chunk.vegMegaAlloc) {
+          this.vegIndirectRenderer.freeChunk(entry.chunk.vegMegaAlloc);
+          entry.chunk.vegMegaAlloc = null;
+        }
         entry.chunk.destroyGPU();
         toRemove.push(key);
       }
@@ -199,6 +229,22 @@ export class ChunkManager {
     this.totalChunks = this.chunks.size;
   }
 
+  private uploadSolidMesh(chunk: Chunk, meshData: MeshData): void {
+    // Free previous allocation
+    if (chunk.solidAlloc) {
+      this.indirectRenderer.freeChunk(chunk.solidAlloc);
+      chunk.solidAlloc = null;
+    }
+
+    if (meshData.indexCount > 0) {
+      const alloc = this.indirectRenderer.uploadChunk(
+        meshData.vertices, meshData.indices,
+        chunk.worldOffsetX, chunk.worldOffsetZ,
+      );
+      chunk.solidAlloc = alloc;
+    }
+  }
+
   private rebuildNeighborIfReady(cx: number, cz: number): void {
     const key = chunkKey(cx, cz);
     const entry = this.chunks.get(key);
@@ -207,23 +253,13 @@ export class ChunkManager {
     const neighbors = this.getNeighbors(cx, cz);
     const meshData = buildChunkMesh(entry.chunk, neighbors);
 
-    entry.chunk.destroyGPU();
-    if (meshData.indexCount > 0) {
-      entry.chunk.vertexBuffer = this.ctx.device.createBuffer({
-        size: meshData.vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-      this.ctx.device.queue.writeBuffer(entry.chunk.vertexBuffer, 0, meshData.vertices.buffer as ArrayBuffer);
+    // Re-upload solid mesh
+    this.uploadSolidMesh(entry.chunk, meshData);
 
-      entry.chunk.indexBuffer = this.ctx.device.createBuffer({
-        size: meshData.indices.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
-      this.ctx.device.queue.writeBuffer(entry.chunk.indexBuffer, 0, meshData.indices.buffer as ArrayBuffer);
-      entry.chunk.indexCount = meshData.indexCount;
-    }
-
+    // Water
     this.uploadWaterMesh(entry.chunk, meshData);
+
+    // Vegetation
     this.uploadVegetationMesh(entry.chunk, meshData);
   }
 
@@ -242,27 +278,30 @@ export class ChunkManager {
     return null;
   }
 
+  // Legacy draw calls API (for shadow pass and water which still use per-chunk draw calls)
   getDrawCalls(): ChunkDrawCall[] {
+    // For solid meshes, we'll construct draw calls from the mega buffer
+    // Each chunk's data is in the mega buffer, we just need to expose the right view
     const calls: ChunkDrawCall[] = [];
     for (const entry of this.chunks.values()) {
       if (entry.state !== ChunkState.READY) continue;
       const c = entry.chunk;
-      if (!c.vertexBuffer || !c.indexBuffer || c.indexCount === 0) continue;
-
-      // Frustum cull using chunk AABB
+      if (!c.solidAlloc) continue;
       if (!this.isChunkInFrustum(c)) continue;
 
+      // Legacy compat: expose mega buffer as vertex/index buffer
       calls.push({
-        vertexBuffer: c.vertexBuffer,
-        indexBuffer: c.indexBuffer,
-        indexCount: c.indexCount,
+        vertexBuffer: this.indirectRenderer.vertexMega.buffer,
+        indexBuffer: this.indirectRenderer.indexMega.buffer,
+        indexCount: c.solidAlloc.indexCount,
+        firstIndex: c.solidAlloc.firstIndex,
+        baseVertex: c.solidAlloc.baseVertex,
       });
     }
     return calls;
   }
 
   private uploadWaterMesh(chunk: Chunk, meshData: MeshData): void {
-    // Destroy old water buffers
     chunk.waterVertexBuffer?.destroy();
     chunk.waterIndexBuffer?.destroy();
     chunk.waterVertexBuffer = null;
@@ -286,6 +325,13 @@ export class ChunkManager {
   }
 
   private uploadVegetationMesh(chunk: Chunk, meshData: MeshData): void {
+    // Free previous mega alloc
+    if (chunk.vegMegaAlloc) {
+      this.vegIndirectRenderer.freeChunk(chunk.vegMegaAlloc);
+      chunk.vegMegaAlloc = null;
+    }
+
+    // Also destroy per-chunk buffers if they exist
     chunk.vegVertexBuffer?.destroy();
     chunk.vegIndexBuffer?.destroy();
     chunk.vegVertexBuffer = null;
@@ -293,18 +339,11 @@ export class ChunkManager {
     chunk.vegIndexCount = 0;
 
     if (meshData.vegIndexCount > 0) {
-      chunk.vegVertexBuffer = this.ctx.device.createBuffer({
-        size: meshData.vegVertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-      this.ctx.device.queue.writeBuffer(chunk.vegVertexBuffer, 0, meshData.vegVertices.buffer as ArrayBuffer);
-
-      chunk.vegIndexBuffer = this.ctx.device.createBuffer({
-        size: meshData.vegIndices.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
-      this.ctx.device.queue.writeBuffer(chunk.vegIndexBuffer, 0, meshData.vegIndices.buffer as ArrayBuffer);
-      chunk.vegIndexCount = meshData.vegIndexCount;
+      const alloc = this.vegIndirectRenderer.uploadChunk(
+        meshData.vegVertices, meshData.vegIndices,
+        chunk.worldOffsetX, chunk.worldOffsetZ,
+      );
+      chunk.vegMegaAlloc = alloc;
     }
   }
 
@@ -313,12 +352,14 @@ export class ChunkManager {
     for (const entry of this.chunks.values()) {
       if (entry.state !== ChunkState.READY) continue;
       const c = entry.chunk;
-      if (!c.vegVertexBuffer || !c.vegIndexBuffer || c.vegIndexCount === 0) continue;
+      if (!c.vegMegaAlloc) continue;
       if (!this.isChunkInFrustum(c)) continue;
       calls.push({
-        vertexBuffer: c.vegVertexBuffer,
-        indexBuffer: c.vegIndexBuffer,
-        indexCount: c.vegIndexCount,
+        vertexBuffer: this.vegIndirectRenderer.vertexMega.buffer,
+        indexBuffer: this.vegIndirectRenderer.indexMega.buffer,
+        indexCount: c.vegMegaAlloc.indexCount,
+        firstIndex: c.vegMegaAlloc.firstIndex,
+        baseVertex: c.vegMegaAlloc.baseVertex,
       });
     }
     return calls;
@@ -354,7 +395,6 @@ export class ChunkManager {
           if (data.emissive <= 0) continue;
 
           const c = data.color;
-          // Determine radius based on emissive intensity
           let radius: number;
           if (data.emissive >= 0.8) {
             radius = 8;
@@ -377,7 +417,6 @@ export class ChunkManager {
   }
 
   getPointLights(cameraPos: vec3): PointLight[] {
-    // Collect all emissive lights from loaded chunks
     const allLights: PointLight[] = [];
     for (const [key, entry] of this.chunks) {
       if (entry.state !== ChunkState.READY) continue;
@@ -391,7 +430,6 @@ export class ChunkManager {
       }
     }
 
-    // Sort by distance to camera and take closest MAX_POINT_LIGHTS
     const cx = cameraPos[0] as number;
     const cy = cameraPos[1] as number;
     const cz = cameraPos[2] as number;
@@ -409,7 +447,6 @@ export class ChunkManager {
   }
 
   private extractFrustumPlanes(m: Float32Array): void {
-    // Extract 6 frustum planes from view-projection matrix (reuse pre-allocated arrays)
     // Left
     this.frustumPlanes[0][0] = m[3] + m[0];
     this.frustumPlanes[0][1] = m[7] + m[4];

@@ -941,27 +941,30 @@ export class DeferredPipeline {
       pass.setBindGroup(1, this.textureBindGroup);
     }
 
+    // Track last bound buffers to avoid redundant rebinding (mega buffer optimization)
+    let lastVB: GPUBuffer | null = null;
+    let lastIB: GPUBuffer | null = null;
     for (const dc of drawCalls) {
       if (dc.indexCount === 0) continue;
-      pass.setVertexBuffer(0, dc.vertexBuffer);
-      pass.setIndexBuffer(dc.indexBuffer, 'uint32');
-      pass.drawIndexed(dc.indexCount);
+      if (dc.vertexBuffer !== lastVB) { pass.setVertexBuffer(0, dc.vertexBuffer); lastVB = dc.vertexBuffer; }
+      if (dc.indexBuffer !== lastIB) { pass.setIndexBuffer(dc.indexBuffer, 'uint32'); lastIB = dc.indexBuffer; }
+      pass.drawIndexed(dc.indexCount, 1, dc.firstIndex ?? 0, dc.baseVertex ?? 0);
     }
 
     // Vegetation: switch to vegetation pipeline (cullMode: 'none'), same bind groups
     if (vegDrawCalls && vegDrawCalls.length > 0) {
       pass.setPipeline(this.gbufferVegetationPipeline);
-      // Bind groups are shared (same layout), re-set them for the new pipeline
       pass.setBindGroup(0, this.cameraBindGroup);
       if (this.textureBindGroup) {
         pass.setBindGroup(1, this.textureBindGroup);
       }
 
+      lastVB = null; lastIB = null;
       for (const dc of vegDrawCalls) {
         if (dc.indexCount === 0) continue;
-        pass.setVertexBuffer(0, dc.vertexBuffer);
-        pass.setIndexBuffer(dc.indexBuffer, 'uint32');
-        pass.drawIndexed(dc.indexCount);
+        if (dc.vertexBuffer !== lastVB) { pass.setVertexBuffer(0, dc.vertexBuffer); lastVB = dc.vertexBuffer; }
+        if (dc.indexBuffer !== lastIB) { pass.setIndexBuffer(dc.indexBuffer, 'uint32'); lastIB = dc.indexBuffer; }
+        pass.drawIndexed(dc.indexCount, 1, dc.firstIndex ?? 0, dc.baseVertex ?? 0);
       }
     }
 

@@ -39,6 +39,27 @@ fn buildTBN(faceIdx: u32) -> mat3x3<f32> {
   return mat3x3<f32>(T, B, N);
 }
 
+// Atlas constants
+const ATLAS_TILES: f32 = 16.0;
+const TILE_UV_SIZE: f32 = 1.0 / 16.0;
+const HALF_TEXEL: f32 = 0.5 / 256.0;  // half texel for 256px atlas
+
+// Convert tiled UV [0..W]x[0..H] to atlas UV for a given blockType.
+// For cutout blocks (leaves/veg), texCoord is already in atlas space.
+fn tiledUVtoAtlas(texCoord: vec2<f32>, blockType: u32) -> vec2<f32> {
+  let tileX = f32(blockType % u32(ATLAS_TILES));
+  let tileY = f32(blockType / u32(ATLAS_TILES));
+  let tileBase = vec2<f32>(tileX * TILE_UV_SIZE, tileY * TILE_UV_SIZE);
+
+  // fract() gives the position within each tile [0..1]
+  let localUV = fract(texCoord);
+
+  // Apply half-texel inset to prevent tile bleeding at boundaries
+  let insetUV = clamp(localUV, vec2<f32>(HALF_TEXEL), vec2<f32>(1.0 - HALF_TEXEL));
+
+  return tileBase + insetUV * TILE_UV_SIZE;
+}
+
 struct VertexOutput {
   @builtin(position) clipPos: vec4<f32>,
   @location(0) worldPos: vec3<f32>,
@@ -55,20 +76,29 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
   let faceIdx = input.normalIndex & 0xFFu;
   let blockType = input.normalIndex >> 8u;
 
-  // Alpha cutout: leaves (51) and vegetation (80-82) use atlas texture alpha.
-  applyCutout(blockType, input.texCoord);
+  // Determine if this is a cutout block (uses direct atlas UV, not tiled)
+  let isCutout = (blockType == 51u) || (blockType >= 80u && blockType <= 82u);
 
-  let albedo = textureSampleLevel(atlasTexture, atlasSampler, input.texCoord, 0.0);
-  let mat = textureSampleLevel(materialAtlas, atlasSampler, input.texCoord, 0.0);
-  let normalSample = textureSampleLevel(normalAtlas, atlasSampler, input.texCoord, 0.0).rgb;
+  // Compute atlas UV: cutout blocks use texCoord directly, others use tiled conversion
+  var atlasUV: vec2<f32>;
+  if (isCutout) {
+    atlasUV = input.texCoord;
+  } else {
+    atlasUV = tiledUVtoAtlas(input.texCoord, blockType);
+  }
+
+  // Alpha cutout: leaves (51) and vegetation (80-82) use atlas texture alpha.
+  applyCutout(blockType, atlasUV);
+
+  let albedo = textureSampleLevel(atlasTexture, atlasSampler, atlasUV, 0.0);
+  let mat = textureSampleLevel(materialAtlas, atlasSampler, atlasUV, 0.0);
+  let normalSample = textureSampleLevel(normalAtlas, atlasSampler, atlasUV, 0.0).rgb;
 
   let idx = min(faceIdx, 5u);
 
   var worldNormal: vec3<f32>;
   if (blockType >= 80u && blockType <= 82u) {
     // Vegetation: use face normal from geometry, oriented toward camera
-    // For cross-mesh (X-shaped quads), the geometric normal is meaningful
-    // and we negate it for back faces so both sides shade consistently
     worldNormal = FACE_NORMALS[idx];
     if (!frontFacing) { worldNormal = -worldNormal; }
   } else {

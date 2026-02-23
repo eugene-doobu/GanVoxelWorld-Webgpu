@@ -11,6 +11,8 @@ export interface ChunkDrawCall {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;
+  firstIndex?: number;    // offset in uint32 elements into index buffer
+  baseVertex?: number;    // added to each index value before indexing into vertex buffer
 }
 
 // WebGPU-compatible orthographic projection: depth range [0, 1] instead of [-1, 1]
@@ -307,11 +309,14 @@ export class ShadowMap {
       pass.setPipeline(this.pipeline);
       pass.setBindGroup(0, this.bindGroups[c]);
 
+      // Track last bound buffers to avoid redundant rebinding (mega buffer optimization)
+      let lastVB: GPUBuffer | null = null;
+      let lastIB: GPUBuffer | null = null;
       for (const dc of drawCalls) {
         if (dc.indexCount === 0) continue;
-        pass.setVertexBuffer(0, dc.vertexBuffer);
-        pass.setIndexBuffer(dc.indexBuffer, 'uint32');
-        pass.drawIndexed(dc.indexCount);
+        if (dc.vertexBuffer !== lastVB) { pass.setVertexBuffer(0, dc.vertexBuffer); lastVB = dc.vertexBuffer; }
+        if (dc.indexBuffer !== lastIB) { pass.setIndexBuffer(dc.indexBuffer, 'uint32'); lastIB = dc.indexBuffer; }
+        pass.drawIndexed(dc.indexCount, 1, dc.firstIndex ?? 0, dc.baseVertex ?? 0);
       }
 
       // Vegetation: use cutout pipeline for alpha-tested shadows
@@ -319,11 +324,12 @@ export class ShadowMap {
         pass.setPipeline(this.cutoutPipeline);
         pass.setBindGroup(0, this.bindGroups[c]);
         pass.setBindGroup(1, this.atlasBindGroup);
+        lastVB = null; lastIB = null;
         for (const dc of vegDrawCalls) {
           if (dc.indexCount === 0) continue;
-          pass.setVertexBuffer(0, dc.vertexBuffer);
-          pass.setIndexBuffer(dc.indexBuffer, 'uint32');
-          pass.drawIndexed(dc.indexCount);
+          if (dc.vertexBuffer !== lastVB) { pass.setVertexBuffer(0, dc.vertexBuffer); lastVB = dc.vertexBuffer; }
+          if (dc.indexBuffer !== lastIB) { pass.setIndexBuffer(dc.indexBuffer, 'uint32'); lastIB = dc.indexBuffer; }
+          pass.drawIndexed(dc.indexCount, 1, dc.firstIndex ?? 0, dc.baseVertex ?? 0);
         }
       }
 

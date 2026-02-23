@@ -20,12 +20,15 @@ fn main(input: VertexInput) -> VertexOutput {
   var out: VertexOutput;
   var pos = input.position;
 
-  // Multi-frequency wave displacement (4 octaves)
+  // Multi-frequency wave displacement (matches fragment normal derivatives)
   let t = uniforms.time;
   let wave = sin(pos.x * 0.8 + t * 1.2) * 0.08
            + sin(pos.z * 1.2 + t * 0.9) * 0.06
            + sin((pos.x + pos.z) * 2.0 + t * 2.5) * 0.03
-           + sin((pos.x - pos.z) * 3.0 + t * 1.8) * 0.015;
+           + sin((pos.x - pos.z) * 3.0 + t * 1.8) * 0.015
+           // Medium-frequency ripples
+           + sin(pos.x * 5.3 + pos.z * 1.7 + t * 3.1) * 0.005
+           + sin(pos.z * 4.9 - pos.x * 2.3 + t * 2.7) * 0.005;
   pos.y += wave;
 
   out.position = uniforms.viewProjection * vec4f(pos, 1.0);
