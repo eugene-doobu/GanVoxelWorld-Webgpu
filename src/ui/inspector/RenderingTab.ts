@@ -6,13 +6,12 @@ export function buildRenderingTab(): InspectorTab {
   // General
   const general = tab.addSection('General');
   general.addField({ type: 'slider', label: 'Render Dist', configPath: 'rendering.general.renderDistance', min: 2, max: 24, step: 1 });
-  general.addField({ type: 'slider', label: 'Chunks/Frame', configPath: 'rendering.general.chunksPerFrame', min: 1, max: 8, step: 1 });
+  general.addField({ type: 'slider', label: 'Time Budget (ms)', configPath: 'rendering.general.timeBudgetMs', min: 2, max: 32, step: 1 });
 
   // LOD
   const lod = tab.addSection('LOD');
   lod.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.lod.enabled' });
   lod.addField({ type: 'slider', label: 'LOD Distance', configPath: 'rendering.lod.renderDistance', min: 4, max: 24, step: 1 });
-  lod.addField({ type: 'slider', label: 'LOD Chunks/Frame', configPath: 'rendering.lod.chunksPerFrame', min: 1, max: 4, step: 1 });
 
   // Shadows
   const shadows = tab.addSection('Shadows', true);

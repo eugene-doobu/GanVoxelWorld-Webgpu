@@ -83,6 +83,9 @@ export class ChunkManager {
   private lodPendingNeighborRebuilds = new Set<string>();
   private lodIndirectRenderer: IndirectRenderer;
 
+  // Time budget deadline shared between LOD 0 and LOD processing
+  private frameDeadline = 0;
+
   constructor(ctx: WebGPUContext, seed: number) {
     this.ctx = ctx;
     this.terrainGen = new TerrainGenerator(seed);
@@ -169,20 +172,24 @@ export class ChunkManager {
       }
     }
 
-    // Sort queue by distance to camera
+    // Sort queue: frustum-visible chunks first, then by distance
     this.loadQueue.sort((a, b) => {
+      const inA = this.isChunkCoordsInFrustum(a.cx, a.cz) ? 0 : 1;
+      const inB = this.isChunkCoordsInFrustum(b.cx, b.cz) ? 0 : 1;
+      if (inA !== inB) return inA - inB;
       const da = (a.cx - camChunkX) ** 2 + (a.cz - camChunkZ) ** 2;
       const db = (b.cx - camChunkX) ** 2 + (b.cz - camChunkZ) ** 2;
       return da - db;
     });
 
-    // Process N chunks per frame
-    const chunksPerFrame = Config.data.rendering.general.chunksPerFrame;
-    let processed = 0;
+    // Process chunks within time budget (LOD 0 has priority)
+    const timeBudgetMs = Config.data.rendering.general.timeBudgetMs;
+    const deadline = performance.now() + timeBudgetMs;
+    this.frameDeadline = deadline;
     const generatedThisFrame = new Set<string>();
     const neighborsToRebuild = new Set<string>();
 
-    while (this.loadQueue.length > 0 && processed < chunksPerFrame) {
+    while (this.loadQueue.length > 0 && performance.now() < deadline) {
       const { cx, cz } = this.loadQueue.shift()!;
       const key = chunkKey(cx, cz);
       const entry = this.chunks.get(key);
@@ -219,7 +226,6 @@ export class ChunkManager {
       entry.chunk.compress();
 
       entry.state = ChunkState.READY;
-      processed++;
       generatedThisFrame.add(key);
 
       // Defer neighbor rebuilds (don't rebuild immediately — queue for later frames)
@@ -566,6 +572,26 @@ export class ChunkManager {
     return true;
   }
 
+  /** Frustum test using chunk grid coordinates (no Chunk object needed) */
+  private isChunkCoordsInFrustum(cx: number, cz: number): boolean {
+    const minX = cx * CHUNK_WIDTH;
+    const minY = 0;
+    const minZ = cz * CHUNK_DEPTH;
+    const maxX = minX + CHUNK_WIDTH;
+    const maxY = CHUNK_HEIGHT;
+    const maxZ = minZ + CHUNK_DEPTH;
+
+    for (const p of this.frustumPlanes) {
+      const px = p[0] > 0 ? maxX : minX;
+      const py = p[1] > 0 ? maxY : minY;
+      const pz = p[2] > 0 ? maxZ : minZ;
+      if (p[0] * px + p[1] * py + p[2] * pz + p[3] < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // ---- LOD System ----
 
   private updateLOD(camChunkX: number, camChunkZ: number): void {
@@ -625,19 +651,20 @@ export class ChunkManager {
       }
     }
 
-    // Sort LOD queue by distance
+    // Sort LOD queue: frustum-visible first, then by distance
     this.lodLoadQueue.sort((a, b) => {
+      const inA = this.isChunkCoordsInFrustum(a.cx, a.cz) ? 0 : 1;
+      const inB = this.isChunkCoordsInFrustum(b.cx, b.cz) ? 0 : 1;
+      if (inA !== inB) return inA - inB;
       const da = (a.cx - camChunkX) ** 2 + (a.cz - camChunkZ) ** 2;
       const db = (b.cx - camChunkX) ** 2 + (b.cz - camChunkZ) ** 2;
       return da - db;
     });
 
-    // Process LOD chunks
-    const lodChunksPerFrame = lodConfig.chunksPerFrame;
-    let lodProcessed = 0;
+    // Process LOD chunks (use remaining time budget from LOD 0)
     const lodGeneratedThisFrame = new Set<string>();
 
-    while (this.lodLoadQueue.length > 0 && lodProcessed < lodChunksPerFrame) {
+    while (this.lodLoadQueue.length > 0 && performance.now() < this.frameDeadline) {
       const { cx, cz } = this.lodLoadQueue.shift()!;
       const key = chunkKey(cx, cz);
       const entry = this.lodChunks.get(key);
@@ -690,7 +717,6 @@ export class ChunkManager {
       entry.chunk.compress();
 
       entry.state = ChunkState.READY;
-      lodProcessed++;
       lodGeneratedThisFrame.add(key);
 
       // Queue neighbor rebuilds

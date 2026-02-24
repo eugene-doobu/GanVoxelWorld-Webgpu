@@ -64,7 +64,7 @@ export interface TerrainConfig {
 
 export interface RenderingGeneralConfig {
   renderDistance: number;
-  chunksPerFrame: number;
+  timeBudgetMs: number;
 }
 
 export interface RenderingShadowsConfig {
@@ -145,7 +145,6 @@ export interface RenderingPCSSConfig {
 export interface RenderingLODConfig {
   enabled: boolean;
   renderDistance: number;
-  chunksPerFrame: number;
 }
 
 export interface RenderingConfig {
@@ -218,7 +217,7 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'camera.far':              { min: 10, max: 100000 },
   // Rendering - general
   'rendering.general.renderDistance':  { min: 1, max: 32 },
-  'rendering.general.chunksPerFrame': { min: 1, max: 10 },
+  'rendering.general.timeBudgetMs':   { min: 2, max: 32 },
   // Rendering - shadows
   'rendering.shadows.cascadeCount': { min: 1, max: 8 },
   'rendering.shadows.mapSize':      { min: 256, max: 8192 },
@@ -255,7 +254,6 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'rendering.pcss.lightSize':       { min: 0.1, max: 20 },
   // Rendering - LOD
   'rendering.lod.renderDistance':   { min: 0, max: 32 },
-  'rendering.lod.chunksPerFrame':  { min: 1, max: 4 },
   // Terrain - noise
   'terrain.noise.octaves':     { min: 1, max: 8 },
   'terrain.noise.persistence': { min: 0.01, max: 1 },
@@ -375,7 +373,7 @@ class ConfigManager {
         trees: { perChunk: 3, minTrunkHeight: 4, maxTrunkHeight: 6, leafDecayChance: 0.2 },
       },
       rendering: {
-        general: { renderDistance: 14, chunksPerFrame: 2 },
+        general: { renderDistance: 14, timeBudgetMs: 12 },
         shadows: { cascadeCount: 3, mapSize: 2048, cascadeSplits: [20, 60, 160] },
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },
@@ -390,7 +388,7 @@ class ConfigManager {
         motionBlur: { enabled: false, strength: 0.5 },
         dof: { enabled: false, focusDistance: 50.0, aperture: 0.05, maxBlur: 10.0 },
         pcss: { enabled: true, lightSize: 3.0 },
-        lod: { enabled: true, renderDistance: 14, chunksPerFrame: 2 },
+        lod: { enabled: true, renderDistance: 14 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,
