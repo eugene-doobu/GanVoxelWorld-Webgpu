@@ -3,10 +3,11 @@ import { Config } from '../config/Config';
 
 export class DayNightCycle {
   // Time of day: 0.0 = midnight, 0.25 = 06:00, 0.5 = noon, 0.75 = 18:00
-  timeOfDay = 0.35; // Start at ~08:24 (morning)
+  timeOfDay = 0.0; // Start at midnight
   paused = false;
 
   sunDir = vec3.fromValues(0, 1, 0);
+  moonDir = vec3.fromValues(0, -1, 0);
   sunColor = new Float32Array([1.0, 0.95, 0.85]);
   sunIntensity = 3.0;
   ambientColor = new Float32Array([0.10, 0.13, 0.18]);
@@ -16,7 +17,7 @@ export class DayNightCycle {
   moonPhase = 0.5;        // 0.0=new moon, 0.5=full moon
   moonBrightness = 1.0;   // derived from moonPhase: 0→1
   private dayCount = 4;   // elapsed days (start at 4 → moonPhase=0.5=full moon)
-  private prevTimeOfDay = 0.35;
+  private prevTimeOfDay = 0.0;
 
   update(dt: number): void {
     if (!this.paused) {
@@ -60,6 +61,8 @@ export class DayNightCycle {
     const sunZ = Math.cos(angle) * 0.3;
 
     vec3.normalize(this.sunDir, vec3.fromValues(sunX, sunY, sunZ));
+    // moonDir is always opposite to sunDir
+    vec3.negate(this.moonDir, this.sunDir);
   }
 
   private updateLighting(): void {
@@ -94,9 +97,7 @@ export class DayNightCycle {
       this.ambientColor[2] = 0.08 + 0.07 * t;  // 0.08 → 0.15
       this.ambientGroundFactor = 0.15 + 0.15 * t;  // 0.15 → 0.30
     } else {
-      // Night — use moonlight as directional light
-      // Flip sunDir to moon direction (opposite side of sky)
-      vec3.negate(this.sunDir, this.sunDir);
+      // Night — moonlight as directional light (moonDir computed in updateSunPosition)
 
       // Cool blue moonlight color, intensity varies with moon phase
       this.sunColor[0] = 0.35;
@@ -111,6 +112,18 @@ export class DayNightCycle {
       this.ambientColor[2] = 0.05 + 0.03 * mb;
       this.ambientGroundFactor = 0.10 + 0.05 * mb;
     }
+  }
+
+  /** True sun height [-1, 1] from timeOfDay, always reflects the real sun position. */
+  get trueSunHeight(): number {
+    return Math.sin((this.timeOfDay - 0.25) * Math.PI * 2);
+  }
+
+  /** lightDir: sunDir during day, moonDir at night (with smooth transition). */
+  get lightDir(): Float32Array {
+    return this.sunDir[1] > -0.1
+      ? this.sunDir as unknown as Float32Array
+      : this.moonDir as unknown as Float32Array;
   }
 
   // Returns hour in 0-24 format for HUD display

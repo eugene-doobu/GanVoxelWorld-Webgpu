@@ -180,9 +180,14 @@ export interface CloudConfig {
   detailStrength: number;
 }
 
+export interface SkyConfig {
+  starBrightness: number;     // [0, 2], default 1.0
+  nebulaIntensity: number;    // [0, 2], default 1.0
+}
+
 export interface EnvironmentConfig {
   dayDurationSeconds: number;
-  cloudCoverage: number;
+  sky: SkyConfig;
   cloud: CloudConfig;
 }
 
@@ -285,7 +290,8 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'terrain.trees.leafDecayChance': { min: 0, max: 1 },
   // Environment
   'environment.dayDurationSeconds': { min: 10, max: 36000 },
-  'environment.cloudCoverage':      { min: 0, max: 1 },
+  'environment.sky.starBrightness':      { min: 0, max: 2 },
+  'environment.sky.nebulaIntensity':     { min: 0, max: 2 },
   'environment.cloud.coverage':         { min: 0, max: 1 },
   'environment.cloud.baseNoiseScale':   { min: 0.0001, max: 0.1 },
   'environment.cloud.extinction':       { min: 0.01, max: 5 },
@@ -396,7 +402,10 @@ class ConfigManager {
       },
       environment: {
         dayDurationSeconds: 1200,
-        cloudCoverage: 0.35,
+        sky: {
+          starBrightness: 1.0,
+          nebulaIntensity: 1.0,
+        },
         cloud: {
           coverage: 0.35,
           baseNoiseScale: 0.0018,

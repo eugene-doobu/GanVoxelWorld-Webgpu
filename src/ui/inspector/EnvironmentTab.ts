@@ -1,5 +1,4 @@
 import { InspectorTab } from './InspectorTab';
-import { Config } from '../../config/Config';
 import { DayNightCycle } from '../../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../../world/WeatherSystem';
 
@@ -53,6 +52,11 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
 
   dayNight.addField({ type: 'slider', label: 'Day Duration', configPath: 'environment.dayDurationSeconds', min: 60, max: 3600, step: 60 });
 
+  // Sky section
+  const sky = tab.addSection('Sky');
+  sky.addField({ type: 'slider', label: 'Star Brightness', configPath: 'environment.sky.starBrightness', min: 0, max: 2, step: 0.05 });
+  sky.addField({ type: 'slider', label: 'Nebula Intensity', configPath: 'environment.sky.nebulaIntensity', min: 0, max: 2, step: 0.05 });
+
   // Cloud section
   const clouds = tab.addSection('Clouds');
   clouds.addField({ type: 'slider', label: 'Coverage', configPath: 'environment.cloud.coverage', min: 0, max: 1, step: 0.05 });
@@ -60,13 +64,6 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   clouds.addField({ type: 'slider', label: 'Extinction', configPath: 'environment.cloud.extinction', min: 0.05, max: 1.0, step: 0.05 });
   clouds.addField({ type: 'slider', label: 'Scatter Floor', configPath: 'environment.cloud.multiScatterFloor', min: 0, max: 0.8, step: 0.05 });
   clouds.addField({ type: 'slider', label: 'Detail Str.', configPath: 'environment.cloud.detailStrength', min: 0, max: 0.5, step: 0.01 });
-
-  // Sync cloud.coverage → cloudCoverage (legacy uniform path)
-  Config.onChange((path) => {
-    if (path === 'environment.cloud.coverage') {
-      Config.data.environment.cloudCoverage = Config.data.environment.cloud.coverage;
-    }
-  });
 
   // Auto-update time display + weather UI sync
   tab._updateTimeFn = () => {

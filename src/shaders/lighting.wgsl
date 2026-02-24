@@ -1,18 +1,7 @@
 // ======================== Deferred PBR Lighting ========================
 // Cook-Torrance BRDF with shadow mapping, SSAO, and day-night cycle
 
-struct SceneUniforms {
-  invViewProj: mat4x4<f32>,        // 64
-  cameraPos: vec4<f32>,            // 16
-  sunDir: vec4<f32>,               // 16  (xyz=direction, w=unused)
-  sunColor: vec4<f32>,             // 16  (rgb=color, w=intensity)
-  ambientColor: vec4<f32>,         // 16  (rgb=sky ambient, w=ground factor)
-  fogParams: vec4<f32>,            // 16  (x=start, y=end, z=timeOfDay, w=unused)
-  cloudParams: vec4<f32>,          // 16  (x=baseNoiseScale, y=extinction, z=multiScatterFloor, w=detailStrength)
-  viewProj: mat4x4<f32>,          // 64  (unjittered viewProj for contact shadow)
-  contactShadowParams: vec4<f32>,  // 16  (x=enabled, y=maxSteps, z=rayLength, w=thickness)
-  skyNightParams: vec4<f32>,       // 16  (x=moonPhase, y=moonBrightness, z=elapsedTime, w=reserved)
-};
+#include "common/scene_uniforms.wgsl"
 
 struct ShadowUniforms {
   lightViewProj: array<mat4x4<f32>, 3>,  // 192
@@ -58,10 +47,10 @@ const PI: f32 = 3.14159265359;
 // ====================== Atmospheric Scattering (Fog) ======================
 #include "common/phase_functions.wgsl"
 
-fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
+fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f) -> vec3f {
   let cosTheta = dot(normalize(viewDir), sunDir);
-  // True sun height (immune to CPU sunDir negation at night)
-  let trueSunHeight = sin((timeOfDay - 0.25) * 2.0 * PI);
+  // trueSunHeight: CPU-computed, immune to day/night lightDir switching
+  let trueSunHeight = scene.skyNightParams.w;
   // Rayleigh (blue sky)
   let rayleigh = rayleighPhase(cosTheta);
   let rayleighColor = vec3f(0.3, 0.55, 0.95) * rayleigh;
@@ -239,7 +228,7 @@ fn contactShadow(worldPos: vec3f, sunDir: vec3f) -> f32 {
 // ====================== Water Caustics ======================
 fn waterCaustics(worldPos: vec3f, time: f32, underwaterDepth: f32) -> f32 {
   // Eclipse-style: project underwater position to water surface along sun direction
-  let sunDir = normalize(scene.sunDir.xyz);
+  let sunDir = normalize(scene.lightDir.xyz);
   let waterLevel = scene.cameraPos.w;
   let projectedPos = worldPos.xz + sunDir.xz / max(abs(sunDir.y), 0.01) * underwaterDepth;
 
@@ -317,7 +306,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let worldPos = reconstructWorldPos(uv, depth, scene.invViewProj);
   let V = normalize(scene.cameraPos.xyz - worldPos);
   let N = normal;
-  let L = normalize(scene.sunDir.xyz);
+  let L = normalize(scene.lightDir.xyz);
   let H = normalize(V + L);
 
   let NdotL = max(dot(N, L), 0.0);
@@ -391,7 +380,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Water caustics (underwater surfaces only)
   let waterLevel = scene.cameraPos.w;
-  let waterTime = scene.sunDir.w;
+  let waterTime = scene.lightDir.w;
   if (worldPos.y < waterLevel) {
     let underwaterDepth = waterLevel - worldPos.y;
     let shoreFade = smoothstep(0.0, 0.5, underwaterDepth);
@@ -413,8 +402,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let fogEnd = scene.fogParams.y;
   let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
   let viewDir = worldPos - scene.cameraPos.xyz;
-  let sunDir3 = normalize(scene.sunDir.xyz);
-  let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
+  let sunDir3 = normalize(scene.lightDir.xyz);
+  let fogColor = atmosphericFogColor(viewDir, sunDir3);
   let atmosResult = mix(finalColor, fogColor, fogFactor);
 
   // Underwater Beer-Lambert absorption + scattering

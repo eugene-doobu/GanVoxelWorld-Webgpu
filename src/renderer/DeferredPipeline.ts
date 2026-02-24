@@ -8,6 +8,7 @@ import { TAA } from './TAA';
 import { DayNightCycle } from '../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../world/WeatherSystem';
 import { Config } from '../config/Config';
+import { SimplexNoise } from '../noise/SimplexNoise';
 import {
   GBUFFER_ALBEDO_FORMAT,
   GBUFFER_NORMAL_FORMAT,
@@ -27,7 +28,20 @@ import waterVertShader from '../shaders/water.vert.wgsl?raw';
 import waterFragShader from '../shaders/water.frag.wgsl?raw';
 import weatherShader from '../shaders/weather.wgsl?raw';
 
-// SceneUniforms: invViewProj(64) + cameraPos(16) + sunDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) + cloudParams(16) + viewProj(64) + contactShadowParams(16) + skyNightParams(16) = 256 bytes
+/** Convert f32 → f16 bit pattern (IEEE 754 half-precision). */
+function floatToFloat16(value: number): number {
+  const buf = new ArrayBuffer(4);
+  new Float32Array(buf)[0] = value;
+  const f = new Uint32Array(buf)[0];
+  const sign = (f >> 16) & 0x8000;
+  const exp = ((f >> 23) & 0xFF) - 127 + 15;
+  const frac = (f >> 13) & 0x3FF;
+  if (exp <= 0) return sign; // flush to zero for denormals
+  if (exp >= 31) return sign | 0x7C00; // infinity / overflow
+  return sign | (exp << 10) | frac;
+}
+
+// SceneUniforms: invViewProj(64) + cameraPos(16) + lightDir(16) + sunColor(16) + ambientColor(16) + fogParams(16) + cloudParams(16) + viewProj(64) + contactShadowParams(16) + skyNightParams(16) = 256 bytes
 const SCENE_UNIFORM_SIZE = 256;
 // Camera uniform for G-Buffer pass: viewProj(64) + cameraPos(16) + fogParams(16) + time(4) + pad(12) = 112 bytes
 const CAMERA_UNIFORM_SIZE = 112;
@@ -136,6 +150,10 @@ export class DeferredPipeline {
 
   // Frame counter for temporal dithering
   private frameIndex = 0;
+
+  // Coverage noise pre-computed on CPU (avoid 2x snoise3d per pixel on GPU)
+  private coverageNoise1 = new SimplexNoise(42);
+  private coverageNoise2 = new SimplexNoise(43);
 
   // Shader compilation checks — collected during construction, awaited in init()
   private shaderChecks: Promise<void>[] = [];
@@ -658,10 +676,11 @@ export class DeferredPipeline {
     sceneF32[17] = cameraPos[1];
     sceneF32[18] = cameraPos[2];
     sceneF32[19] = Config.data.terrain.height.seaLevel;  // cameraPos.w = waterLevel
-    sceneF32[20] = dnc.sunDir[0];                      // sunDir
-    sceneF32[21] = dnc.sunDir[1];
-    sceneF32[22] = dnc.sunDir[2];
-    sceneF32[23] = this.waterTime;                     // sunDir.w = waterTime
+    const lightDir = dnc.lightDir;
+    sceneF32[20] = lightDir[0];                        // lightDir (sun day / moon night)
+    sceneF32[21] = lightDir[1];
+    sceneF32[22] = lightDir[2];
+    sceneF32[23] = this.waterTime;                     // lightDir.w = elapsedTime
     sceneF32[24] = dnc.sunColor[0];                    // sunColor
     sceneF32[25] = dnc.sunColor[1];
     sceneF32[26] = dnc.sunColor[2];
@@ -672,8 +691,20 @@ export class DeferredPipeline {
     sceneF32[31] = dnc.ambientGroundFactor;
     sceneF32[32] = fogStart;                           // fogParams
     sceneF32[33] = fogEnd;
-    sceneF32[34] = dnc.timeOfDay;
-    sceneF32[35] = Config.data.environment.cloudCoverage;
+    // fogParams.z: pack starBrightness & nebulaIntensity as 2x f16 in one f32 slot
+    const sky = Config.data.environment.sky;
+    const lo = floatToFloat16(sky.starBrightness);
+    const hi = floatToFloat16(sky.nebulaIntensity);
+    const skyPackBuf = new ArrayBuffer(4);
+    new Uint16Array(skyPackBuf)[0] = lo;
+    new Uint16Array(skyPackBuf)[1] = hi;
+    sceneF32[34] = new Float32Array(skyPackBuf)[0];    // fogParams.z = packed sky params
+    // fogParams.w: cloud coverage with time-varying noise (pre-computed on CPU)
+    const baseCoverage = Config.data.environment.cloud.coverage;
+    const t = this.waterTime;
+    const coverageNoise = this.coverageNoise1.noise3D(t * 0.015, t * 0.007, 0) * 0.25
+                        + this.coverageNoise2.noise3D(t * 0.004, 0, t * 0.003) * 0.15;
+    sceneF32[35] = Math.max(0.05, Math.min(0.9, baseCoverage + coverageNoise));
     const cloud = Config.data.environment.cloud;
     sceneF32[36] = cloud.baseNoiseScale;               // cloudParams.x
     sceneF32[37] = cloud.extinction;                    // cloudParams.y
@@ -691,14 +722,14 @@ export class DeferredPipeline {
     sceneF32[60] = dnc.moonPhase;       // skyNightParams.x
     sceneF32[61] = dnc.moonBrightness;  // skyNightParams.y
     sceneF32[62] = this.waterTime;      // skyNightParams.z (elapsedTime for star twinkle)
-    sceneF32[63] = 0.0;                 // skyNightParams.w (reserved)
+    sceneF32[63] = dnc.trueSunHeight;   // skyNightParams.w = trueSunHeight
     this.ctx.device.queue.writeBuffer(this.sceneUniformBuffer, 0, sceneF32);
 
-    // Update shadow matrices
+    // Update shadow matrices (use lightDir: sun during day, moon at night)
     this.shadowMap.updateLightMatrices(
       cameraPos as unknown as import('gl-matrix').vec3,
       viewProj,
-      dnc.sunDir as unknown as import('gl-matrix').vec3,
+      lightDir as unknown as import('gl-matrix').vec3,
     );
 
     // Update SSAO projection
@@ -712,7 +743,7 @@ export class DeferredPipeline {
     this.postProcess.updateVolumetric(
       this.invVP as Float32Array,
       cameraPos,
-      new Float32Array([dnc.sunDir[0], dnc.sunDir[1], dnc.sunDir[2]]),
+      new Float32Array([lightDir[0], lightDir[1], lightDir[2]]),
       new Float32Array([dnc.sunColor[0], dnc.sunColor[1], dnc.sunColor[2]]),
       dnc.sunIntensity,
       Config.data.terrain.height.seaLevel,
@@ -755,9 +786,9 @@ export class DeferredPipeline {
     wfF32[1] = cameraPos[1];
     wfF32[2] = cameraPos[2];
     wfF32[3] = this.waterTime;
-    wfF32[4] = dnc.sunDir[0];
-    wfF32[5] = dnc.sunDir[1];
-    wfF32[6] = dnc.sunDir[2];
+    wfF32[4] = lightDir[0];
+    wfF32[5] = lightDir[1];
+    wfF32[6] = lightDir[2];
     wfF32[7] = dnc.sunIntensity;
     wfF32[8] = dnc.sunColor[0];
     wfF32[9] = dnc.sunColor[1];
@@ -1142,9 +1173,8 @@ export class DeferredPipeline {
     if (len > 0) { fwd[0] /= len; fwd[1] /= len; fwd[2] /= len; }
 
     const dnc = this.dayNightCycle;
-    const sd = dnc.sunDir;
-    // True sun height from timeOfDay (immune to CPU sunDir negation at night)
-    const sunHeight = Math.sin((dnc.timeOfDay - 0.25) * Math.PI * 2);
+    const sd = dnc.lightDir;
+    const sunHeight = dnc.trueSunHeight;
     const cosTheta = fwd[0] * sd[0] + fwd[1] * sd[1] + fwd[2] * sd[2];
 
     // Rayleigh phase
