@@ -402,11 +402,11 @@ export class ChunkManager {
           const c = data.color;
           let radius: number;
           if (data.emissive >= 0.8) {
-            radius = 8;
+            radius = 16;
           } else if (data.emissive >= 0.1) {
-            radius = 3;
+            radius = 6;
           } else {
-            radius = 2;
+            radius = 3;
           }
 
           // Torch: offset light position based on facing direction

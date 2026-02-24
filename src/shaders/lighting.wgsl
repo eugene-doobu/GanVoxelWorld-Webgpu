@@ -76,9 +76,11 @@ fn atmosphericFogColor(viewDir: vec3f, sunDir: vec3f, timeOfDay: f32) -> vec3f {
   // Night darkening
   let dayFactor = smoothstep(-0.15, 0.1, trueSunHeight);
   fogColor *= dayFactor;
-  // Night fog: derive from ambient so fog never outshines ambient-lit objects
-  let nightFogColor = scene.ambientColor.rgb * 0.2;
-  fogColor += nightFogColor * (1.0 - dayFactor);
+  // Night fog: ambient base + moonlight Mie forward scattering
+  let nightFogColor = scene.ambientColor.rgb * 0.3;
+  let moonMie = hgPhase(cosTheta, 0.76) * 0.03;
+  let nightMoonFog = vec3f(0.15, 0.18, 0.30) * moonMie * scene.skyNightParams.y;
+  fogColor += (nightFogColor + nightMoonFog) * (1.0 - dayFactor);
   return fogColor;
 }
 
@@ -369,7 +371,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (dist > light.radius) { continue; }
 
     let L_p = normalize(lightVec);
-    let attenuation = smoothstep(light.radius, 0.0, dist) / (1.0 + dist * dist);
+    let falloff = dist / light.radius;
+    let attenuation = (1.0 - falloff * falloff) * (1.0 - falloff * falloff) / (1.0 + dist * dist * 0.15);
     let NdotL_p = max(dot(N, L_p), 0.0);
 
     // Diffuse contribution
@@ -401,30 +404,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     finalColor += causticLight;
   }
 
-  // Fog: underwater Beer-Lambert or atmospheric scattering
-  let isUnderwaterCamera = scene.cameraPos.y < scene.cameraPos.w;
+  // Fog: smooth blend between atmospheric and underwater (0.3-unit transition zone)
+  let camDepthBelow = scene.cameraPos.w - scene.cameraPos.y;
+  let uwBlend = smoothstep(-0.3, 0.3, camDepthBelow);
 
-  if (isUnderwaterCamera) {
-    // Underwater Beer-Lambert absorption + scattering fog
-    let uwAbsorb = vec3f(0.39, 0.11, 0.07);
-    let uwTransmittance = exp(-uwAbsorb * min(viewDist, 60.0));
-    let uwDayFactor = smoothstep(-0.1, 0.3, normalize(scene.sunDir.xyz).y);
-    let uwScatterColor = vec3f(0.0, 0.03, 0.07) * uwDayFactor;
-    finalColor = finalColor * uwTransmittance + uwScatterColor * (1.0 - uwTransmittance.b);
+  // Atmospheric scattering fog (always computed)
+  let fogStart = scene.fogParams.x;
+  let fogEnd = scene.fogParams.y;
+  let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
+  let viewDir = worldPos - scene.cameraPos.xyz;
+  let sunDir3 = normalize(scene.sunDir.xyz);
+  let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
+  let atmosResult = mix(finalColor, fogColor, fogFactor);
 
-    // Depth darkening: deeper camera = darker overall
-    let camDepthBelow = scene.cameraPos.w - scene.cameraPos.y;
-    finalColor *= exp(-camDepthBelow * 0.06);
-  } else {
-    // Atmospheric scattering fog (normal above-water)
-    let fogStart = scene.fogParams.x;
-    let fogEnd = scene.fogParams.y;
-    let fogFactor = clamp((viewDist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
-    let viewDir = worldPos - scene.cameraPos.xyz;
-    let sunDir3 = normalize(scene.sunDir.xyz);
-    let fogColor = atmosphericFogColor(viewDir, sunDir3, scene.fogParams.z);
-    finalColor = mix(finalColor, fogColor, fogFactor);
-  }
+  // Underwater Beer-Lambert absorption + scattering
+  let uwAbsorb = vec3f(0.39, 0.11, 0.07);
+  let uwTransmittance = exp(-uwAbsorb * min(viewDist, 60.0));
+  let uwDayFactor = smoothstep(-0.1, 0.3, sunDir3.y);
+  let uwScatterColor = vec3f(0.0, 0.03, 0.07) * uwDayFactor;
+  let uwResult = (finalColor * uwTransmittance + uwScatterColor * (1.0 - uwTransmittance.b))
+               * exp(-max(camDepthBelow, 0.0) * 0.06);
+
+  finalColor = mix(atmosResult, uwResult, uwBlend);
 
   return vec4<f32>(finalColor, 1.0);
 }
