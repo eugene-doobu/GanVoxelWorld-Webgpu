@@ -365,7 +365,7 @@ class ConfigManager {
         trees: { perChunk: 3, minTrunkHeight: 4, maxTrunkHeight: 6, leafDecayChance: 0.2 },
       },
       rendering: {
-        general: { renderDistance: 10, chunksPerFrame: 2 },
+        general: { renderDistance: 14, chunksPerFrame: 2 },
         shadows: { cascadeCount: 3, mapSize: 2048, cascadeSplits: [20, 60, 160] },
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },

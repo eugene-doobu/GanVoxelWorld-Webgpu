@@ -36,20 +36,11 @@ export class Chunk {
   // Mega buffer allocation for vegetation mesh
   vegMegaAlloc: ChunkAllocation | null = null;
 
-  // Legacy per-chunk GPU resources (kept for backward compatibility during migration)
-  vertexBuffer: GPUBuffer | null = null;
-  indexBuffer: GPUBuffer | null = null;
-  indexCount = 0;
-
   // Water GPU resources
   waterVertexBuffer: GPUBuffer | null = null;
   waterIndexBuffer: GPUBuffer | null = null;
   waterIndexCount = 0;
 
-  // Vegetation GPU resources
-  vegVertexBuffer: GPUBuffer | null = null;
-  vegIndexBuffer: GPUBuffer | null = null;
-  vegIndexCount = 0;
 
   constructor(chunkX: number, chunkZ: number) {
     this.chunkX = chunkX;
@@ -319,22 +310,10 @@ export class Chunk {
     this.solidAlloc = null;
     this.vegMegaAlloc = null;
 
-    this.vertexBuffer?.destroy();
-    this.indexBuffer?.destroy();
-    this.vertexBuffer = null;
-    this.indexBuffer = null;
-    this.indexCount = 0;
-
     this.waterVertexBuffer?.destroy();
     this.waterIndexBuffer?.destroy();
     this.waterVertexBuffer = null;
     this.waterIndexBuffer = null;
     this.waterIndexCount = 0;
-
-    this.vegVertexBuffer?.destroy();
-    this.vegIndexBuffer?.destroy();
-    this.vegVertexBuffer = null;
-    this.vegIndexBuffer = null;
-    this.vegIndexCount = 0;
   }
 }

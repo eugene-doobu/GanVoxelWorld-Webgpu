@@ -148,9 +148,5 @@ export function isBlockCrossMesh(type: number): boolean {
   return type === BlockType.TALL_GRASS || type === BlockType.POPPY || type === BlockType.DANDELION;
 }
 
-export function isBlockTranslucent(type: number): boolean {
-  return type === BlockType.ICE;
-}
-
 // All registered block types (for atlas generation)
 export const ALL_BLOCK_TYPES: number[] = Array.from(BLOCK_DATA.keys()).filter(k => k !== BlockType.AIR);

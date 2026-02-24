@@ -54,6 +54,9 @@ export class ChunkManager {
   renderDistance = Config.data.rendering.general.renderDistance;
   totalChunks = 0;
 
+  // Deferred neighbor rebuild queue (processed max 2 per frame)
+  private pendingNeighborRebuilds = new Set<string>();
+
   // Emissive block cache per chunk
   private emissiveCache = new Map<string, PointLight[]>();
   private lastCameraPos = vec3.create();
@@ -105,6 +108,7 @@ export class ChunkManager {
     }
     this.chunks.clear();
     this.loadQueue = [];
+    this.pendingNeighborRebuilds.clear();
     this.emissiveCache.clear();
 
     this.terrainGen = new TerrainGenerator(seed);
@@ -190,20 +194,31 @@ export class ChunkManager {
       processed++;
       generatedThisFrame.add(key);
 
-      // Collect neighbor chunks that need rebuilding (deduplicate via Set)
-      neighborsToRebuild.add(chunkKey(cx - 1, cz));
-      neighborsToRebuild.add(chunkKey(cx + 1, cz));
-      neighborsToRebuild.add(chunkKey(cx, cz - 1));
-      neighborsToRebuild.add(chunkKey(cx, cz + 1));
+      // Defer neighbor rebuilds (don't rebuild immediately — queue for later frames)
+      const nKeys = [
+        chunkKey(cx - 1, cz), chunkKey(cx + 1, cz),
+        chunkKey(cx, cz - 1), chunkKey(cx, cz + 1),
+      ];
+      for (const nk of nKeys) {
+        if (!generatedThisFrame.has(nk)) {
+          this.pendingNeighborRebuilds.add(nk);
+        }
+      }
     }
 
-    // Rebuild collected neighbors once each, skipping chunks generated this frame
-    for (const nKey of neighborsToRebuild) {
-      if (generatedThisFrame.has(nKey)) continue;
+    // Process max 2 deferred neighbor rebuilds per frame
+    let neighborRebuilds = 0;
+    for (const nKey of this.pendingNeighborRebuilds) {
+      if (neighborRebuilds >= 2) break;
       const entry = this.chunks.get(nKey);
-      if (!entry || entry.state !== ChunkState.READY) continue;
+      if (!entry || entry.state !== ChunkState.READY) {
+        this.pendingNeighborRebuilds.delete(nKey);
+        continue;
+      }
       const [ncx, ncz] = nKey.split(',').map(Number);
       this.rebuildNeighborIfReady(ncx, ncz);
+      this.pendingNeighborRebuilds.delete(nKey);
+      neighborRebuilds++;
     }
 
     // Unload distant chunks
@@ -229,6 +244,7 @@ export class ChunkManager {
     for (const key of toRemove) {
       this.chunks.delete(key);
       this.emissiveCache.delete(key);
+      this.pendingNeighborRebuilds.delete(key);
     }
 
     this.totalChunks = this.chunks.size;
@@ -335,13 +351,6 @@ export class ChunkManager {
       this.vegIndirectRenderer.freeChunk(chunk.vegMegaAlloc);
       chunk.vegMegaAlloc = null;
     }
-
-    // Also destroy per-chunk buffers if they exist
-    chunk.vegVertexBuffer?.destroy();
-    chunk.vegIndexBuffer?.destroy();
-    chunk.vegVertexBuffer = null;
-    chunk.vegIndexBuffer = null;
-    chunk.vegIndexCount = 0;
 
     if (meshData.vegIndexCount > 0) {
       const alloc = this.vegIndirectRenderer.uploadChunk(
