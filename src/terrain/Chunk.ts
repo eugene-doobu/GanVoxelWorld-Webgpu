@@ -35,6 +35,8 @@ export class Chunk {
   solidAlloc: ChunkAllocation | null = null;
   // Mega buffer allocation for vegetation mesh
   vegMegaAlloc: ChunkAllocation | null = null;
+  // Mega buffer allocation for LOD mesh (managed by LOD IndirectRenderer)
+  lodAlloc: ChunkAllocation | null = null;
 
   // Water GPU resources
   waterVertexBuffer: GPUBuffer | null = null;
@@ -306,9 +308,10 @@ export class Chunk {
   }
 
   destroyGPU(): void {
-    // Note: solidAlloc and vegMegaAlloc are freed by ChunkManager via IndirectRenderer.freeChunk()
+    // Note: solidAlloc, vegMegaAlloc, lodAlloc are freed by ChunkManager via IndirectRenderer.freeChunk()
     this.solidAlloc = null;
     this.vegMegaAlloc = null;
+    this.lodAlloc = null;
 
     this.waterVertexBuffer?.destroy();
     this.waterIndexBuffer?.destroy();

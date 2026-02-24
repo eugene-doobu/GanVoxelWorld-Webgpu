@@ -27,7 +27,7 @@ export class HUD {
     this.drawInfo = `Draws: ${draws} Water: ${waterDraws}`;
   }
 
-  update(cameraPos: vec3, chunkCount: number, seed: number, speed: number, timeStr?: string): void {
+  update(cameraPos: vec3, chunkCount: number, seed: number, speed: number, timeStr?: string, lodChunkCount = 0): void {
     this.frames++;
     const now = performance.now();
     if (now - this.lastFpsTime >= 1000) {
@@ -40,7 +40,7 @@ export class HUD {
     this.el.innerHTML =
       `FPS: ${this.fps}<br>` +
       `Pos: ${cameraPos[0].toFixed(1)}, ${cameraPos[1].toFixed(1)}, ${cameraPos[2].toFixed(1)}<br>` +
-      `Chunks: ${chunkCount}<br>` +
+      `Chunks: ${chunkCount}${lodChunkCount > 0 ? ` + ${lodChunkCount} LOD` : ''}<br>` +
       `${this.drawInfo}<br>` +
       `Seed: ${seed}<br>` +
       `Speed: ${speed.toFixed(1)}` +

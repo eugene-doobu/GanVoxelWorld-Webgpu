@@ -142,6 +142,12 @@ export interface RenderingPCSSConfig {
   lightSize: number;
 }
 
+export interface RenderingLODConfig {
+  enabled: boolean;
+  renderDistance: number;
+  chunksPerFrame: number;
+}
+
 export interface RenderingConfig {
   general: RenderingGeneralConfig;
   shadows: RenderingShadowsConfig;
@@ -155,6 +161,7 @@ export interface RenderingConfig {
   motionBlur: RenderingMotionBlurConfig;
   dof: RenderingDoFConfig;
   pcss: RenderingPCSSConfig;
+  lod: RenderingLODConfig;
 }
 
 export interface CameraConfig {
@@ -246,6 +253,9 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'rendering.dof.aperture':         { min: 0.001, max: 1 },
   'rendering.dof.maxBlur':          { min: 0, max: 50 },
   'rendering.pcss.lightSize':       { min: 0.1, max: 20 },
+  // Rendering - LOD
+  'rendering.lod.renderDistance':   { min: 0, max: 32 },
+  'rendering.lod.chunksPerFrame':  { min: 1, max: 4 },
   // Terrain - noise
   'terrain.noise.octaves':     { min: 1, max: 8 },
   'terrain.noise.persistence': { min: 0.01, max: 1 },
@@ -380,6 +390,7 @@ class ConfigManager {
         motionBlur: { enabled: false, strength: 0.5 },
         dof: { enabled: false, focusDistance: 50.0, aperture: 0.05, maxBlur: 10.0 },
         pcss: { enabled: true, lightSize: 3.0 },
+        lod: { enabled: true, renderDistance: 14, chunksPerFrame: 2 },
       },
       camera: {
         speed: 20.0, fastSpeed: 60.0, mouseSensitivity: 0.002,

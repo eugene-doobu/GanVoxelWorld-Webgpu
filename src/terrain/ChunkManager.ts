@@ -10,6 +10,7 @@ import { VegetationGenerator } from './VegetationGenerator';
 import { VillageGenerator } from './VillageGenerator';
 import { WaterSimulator } from './WaterSimulator';
 import { buildChunkMesh, ChunkNeighbors, MeshData } from '../meshing/MeshBuilder';
+import { downsample, buildLODMesh, LODNeighborBlocks } from '../meshing/LODGenerator';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
 import { Config } from '../config/Config';
 import { getBlockData, isBlockTorch, TorchFacing } from './BlockTypes';
@@ -24,6 +25,12 @@ const enum ChunkState {
 
 interface ChunkEntry {
   chunk: Chunk;
+  state: ChunkState;
+}
+
+interface LODChunkEntry {
+  chunk: Chunk;
+  lodBlocks: Uint8Array;
   state: ChunkState;
 }
 
@@ -53,6 +60,7 @@ export class ChunkManager {
 
   renderDistance = Config.data.rendering.general.renderDistance;
   totalChunks = 0;
+  totalLODChunks = 0;
 
   // Deferred neighbor rebuild queue (processed max 2 per frame)
   private pendingNeighborRebuilds = new Set<string>();
@@ -69,6 +77,12 @@ export class ChunkManager {
   // Separate IndirectRenderer for vegetation (different pipeline)
   private vegIndirectRenderer: IndirectRenderer;
 
+  // LOD system
+  private lodChunks = new Map<string, LODChunkEntry>();
+  private lodLoadQueue: { cx: number; cz: number }[] = [];
+  private lodPendingNeighborRebuilds = new Set<string>();
+  private lodIndirectRenderer: IndirectRenderer;
+
   constructor(ctx: WebGPUContext, seed: number) {
     this.ctx = ctx;
     this.terrainGen = new TerrainGenerator(seed);
@@ -80,16 +94,18 @@ export class ChunkManager {
     this.waterSim = new WaterSimulator();
     this.indirectRenderer = new IndirectRenderer(ctx.device);
     this.vegIndirectRenderer = new IndirectRenderer(ctx.device);
+    this.lodIndirectRenderer = new IndirectRenderer(ctx.device, 32 * 1024 * 1024, 16 * 1024 * 1024, 2048);
   }
 
   /** Shader compilation checks from indirect renderers */
   get shaderChecks(): Promise<void>[] {
-    return [...this.indirectRenderer.shaderChecks, ...this.vegIndirectRenderer.shaderChecks];
+    return [...this.indirectRenderer.shaderChecks, ...this.vegIndirectRenderer.shaderChecks, ...this.lodIndirectRenderer.shaderChecks];
   }
 
   /** Access IndirectRenderer for rendering */
   get solidIndirect(): IndirectRenderer { return this.indirectRenderer; }
   get vegetationIndirect(): IndirectRenderer { return this.vegIndirectRenderer; }
+  get lodIndirect(): IndirectRenderer { return this.lodIndirectRenderer; }
   getFrustumPlanes(): Float32Array[] { return this.frustumPlanes; }
 
   regenerate(seed: number): void {
@@ -110,6 +126,18 @@ export class ChunkManager {
     this.loadQueue = [];
     this.pendingNeighborRebuilds.clear();
     this.emissiveCache.clear();
+
+    // Free LOD chunks
+    for (const lodEntry of this.lodChunks.values()) {
+      if (lodEntry.chunk.lodAlloc) {
+        this.lodIndirectRenderer.freeChunk(lodEntry.chunk.lodAlloc);
+        lodEntry.chunk.lodAlloc = null;
+      }
+      lodEntry.chunk.destroyGPU();
+    }
+    this.lodChunks.clear();
+    this.lodLoadQueue = [];
+    this.lodPendingNeighborRebuilds.clear();
 
     this.terrainGen = new TerrainGenerator(seed);
     this.caveGen = new CaveGenerator(seed);
@@ -248,6 +276,9 @@ export class ChunkManager {
     }
 
     this.totalChunks = this.chunks.size;
+
+    // ---- LOD system ----
+    this.updateLOD(camChunkX, camChunkZ);
   }
 
   private uploadSolidMesh(chunk: Chunk, meshData: MeshData): void {
@@ -533,5 +564,258 @@ export class ChunkManager {
       }
     }
     return true;
+  }
+
+  // ---- LOD System ----
+
+  private updateLOD(camChunkX: number, camChunkZ: number): void {
+    const lodConfig = Config.data.rendering.lod;
+
+    // If LOD disabled, clear everything
+    if (!lodConfig.enabled) {
+      if (this.lodChunks.size > 0) {
+        for (const lodEntry of this.lodChunks.values()) {
+          if (lodEntry.chunk.lodAlloc) {
+            this.lodIndirectRenderer.freeChunk(lodEntry.chunk.lodAlloc);
+            lodEntry.chunk.lodAlloc = null;
+          }
+          lodEntry.chunk.destroyGPU();
+        }
+        this.lodChunks.clear();
+        this.lodLoadQueue = [];
+        this.lodPendingNeighborRebuilds.clear();
+      }
+      this.totalLODChunks = 0;
+      return;
+    }
+
+    const rd = this.renderDistance;
+    const lodRd = lodConfig.renderDistance;
+    const totalRd = rd + lodRd;
+
+    // Wait until LOD 0 finishes loading before processing LOD chunks
+    if (this.loadQueue.length > 0) {
+      this.totalLODChunks = this.lodChunks.size;
+      return;
+    }
+
+    // Queue new LOD chunks (ring from rd+1 to totalRd)
+    for (let dx = -totalRd; dx <= totalRd; dx++) {
+      for (let dz = -totalRd; dz <= totalRd; dz++) {
+        const dist2 = dx * dx + dz * dz;
+        // Skip if inside LOD 0 range (including overlap zone)
+        if (dist2 <= rd * rd) continue;
+        // Skip if outside LOD ring
+        if (dist2 > totalRd * totalRd) continue;
+
+        const cx = camChunkX + dx;
+        const cz = camChunkZ + dz;
+        const key = chunkKey(cx, cz);
+
+        // Skip if already LOD or full-detail
+        if (this.lodChunks.has(key)) continue;
+        if (this.chunks.has(key)) continue;
+
+        this.lodChunks.set(key, {
+          chunk: new Chunk(cx, cz),
+          lodBlocks: new Uint8Array(0),
+          state: ChunkState.QUEUED,
+        });
+        this.lodLoadQueue.push({ cx, cz });
+      }
+    }
+
+    // Sort LOD queue by distance
+    this.lodLoadQueue.sort((a, b) => {
+      const da = (a.cx - camChunkX) ** 2 + (a.cz - camChunkZ) ** 2;
+      const db = (b.cx - camChunkX) ** 2 + (b.cz - camChunkZ) ** 2;
+      return da - db;
+    });
+
+    // Process LOD chunks
+    const lodChunksPerFrame = lodConfig.chunksPerFrame;
+    let lodProcessed = 0;
+    const lodGeneratedThisFrame = new Set<string>();
+
+    while (this.lodLoadQueue.length > 0 && lodProcessed < lodChunksPerFrame) {
+      const { cx, cz } = this.lodLoadQueue.shift()!;
+      const key = chunkKey(cx, cz);
+      const entry = this.lodChunks.get(key);
+      if (!entry || entry.state !== ChunkState.QUEUED) continue;
+
+      // Check if this chunk entered LOD 0 range
+      const dx = cx - camChunkX;
+      const dz = cz - camChunkZ;
+      if (dx * dx + dz * dz <= rd * rd) {
+        // LOD 0 range — remove LOD entry, let normal pipeline handle it
+        this.lodChunks.delete(key);
+        continue;
+      }
+
+      // Generate terrain (no vegetation, no water)
+      entry.state = ChunkState.GENERATING;
+      this.terrainGen.generate(entry.chunk);
+      this.oreGen.generate(entry.chunk);
+      this.caveGen.generate(entry.chunk);
+      this.villageGen.generate(entry.chunk);
+      this.treeGen.generate(entry.chunk);
+      // Skip: vegGen, waterSim
+
+      // Downsample before compress
+      entry.lodBlocks = downsample(entry.chunk);
+
+      // Build LOD mesh
+      entry.state = ChunkState.MESHING;
+      const lodNeighbors = this.getLODNeighborBlocks(cx, cz);
+      const lodMeshData = buildLODMesh(
+        entry.lodBlocks,
+        entry.chunk.worldOffsetX,
+        entry.chunk.worldOffsetZ,
+        lodNeighbors,
+      );
+
+      // Upload to LOD mega buffer
+      if (entry.chunk.lodAlloc) {
+        this.lodIndirectRenderer.freeChunk(entry.chunk.lodAlloc);
+        entry.chunk.lodAlloc = null;
+      }
+      if (lodMeshData.indexCount > 0) {
+        entry.chunk.lodAlloc = this.lodIndirectRenderer.uploadChunk(
+          lodMeshData.vertices, lodMeshData.indices,
+          entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
+        );
+      }
+
+      // Compress block data
+      entry.chunk.compress();
+
+      entry.state = ChunkState.READY;
+      lodProcessed++;
+      lodGeneratedThisFrame.add(key);
+
+      // Queue neighbor rebuilds
+      const nKeys = [
+        chunkKey(cx - 1, cz), chunkKey(cx + 1, cz),
+        chunkKey(cx, cz - 1), chunkKey(cx, cz + 1),
+      ];
+      for (const nk of nKeys) {
+        if (!lodGeneratedThisFrame.has(nk)) {
+          this.lodPendingNeighborRebuilds.add(nk);
+        }
+      }
+    }
+
+    // Process max 2 LOD neighbor rebuilds per frame
+    let lodNeighborRebuilds = 0;
+    for (const nKey of this.lodPendingNeighborRebuilds) {
+      if (lodNeighborRebuilds >= 2) break;
+      const entry = this.lodChunks.get(nKey);
+      if (!entry || entry.state !== ChunkState.READY) {
+        this.lodPendingNeighborRebuilds.delete(nKey);
+        continue;
+      }
+      const [ncx, ncz] = nKey.split(',').map(Number);
+      this.rebuildLODNeighbor(ncx, ncz, entry);
+      this.lodPendingNeighborRebuilds.delete(nKey);
+      lodNeighborRebuilds++;
+    }
+
+    // Unload LOD chunks that are too far or replaced by full-detail
+    const lodUnloadDist = totalRd + 2;
+    const lodToRemove: string[] = [];
+    for (const [key, entry] of this.lodChunks) {
+      const dx = entry.chunk.chunkX - camChunkX;
+      const dz = entry.chunk.chunkZ - camChunkZ;
+      const dist2 = dx * dx + dz * dz;
+
+      let shouldRemove = false;
+      if (dist2 > lodUnloadDist * lodUnloadDist) {
+        // Too far — always remove
+        shouldRemove = true;
+      } else if (dist2 <= rd * rd) {
+        // Inside LOD 0 range — only remove when full-detail chunk is READY
+        const fullEntry = this.chunks.get(key);
+        if (fullEntry && fullEntry.state === ChunkState.READY) {
+          shouldRemove = true;
+        }
+      }
+
+      if (shouldRemove) {
+        if (entry.chunk.lodAlloc) {
+          this.lodIndirectRenderer.freeChunk(entry.chunk.lodAlloc);
+          entry.chunk.lodAlloc = null;
+        }
+        entry.chunk.destroyGPU();
+        lodToRemove.push(key);
+      }
+    }
+    for (const key of lodToRemove) {
+      this.lodChunks.delete(key);
+      this.lodPendingNeighborRebuilds.delete(key);
+    }
+
+    this.totalLODChunks = this.lodChunks.size;
+  }
+
+  private getLODNeighborBlocks(cx: number, cz: number): LODNeighborBlocks {
+    const getBlocks = (ncx: number, ncz: number): Uint8Array | null => {
+      const entry = this.lodChunks.get(chunkKey(ncx, ncz));
+      if (entry && entry.state >= ChunkState.MESHING && entry.lodBlocks.length > 0) {
+        return entry.lodBlocks;
+      }
+      return null;
+    };
+    return {
+      north: getBlocks(cx, cz + 1),
+      south: getBlocks(cx, cz - 1),
+      east: getBlocks(cx + 1, cz),
+      west: getBlocks(cx - 1, cz),
+    };
+  }
+
+  private rebuildLODNeighbor(cx: number, cz: number, entry: LODChunkEntry): void {
+    if (entry.lodBlocks.length === 0) return;
+
+    const lodNeighbors = this.getLODNeighborBlocks(cx, cz);
+    const lodMeshData = buildLODMesh(
+      entry.lodBlocks,
+      entry.chunk.worldOffsetX,
+      entry.chunk.worldOffsetZ,
+      lodNeighbors,
+    );
+
+    if (entry.chunk.lodAlloc) {
+      this.lodIndirectRenderer.freeChunk(entry.chunk.lodAlloc);
+      entry.chunk.lodAlloc = null;
+    }
+    if (lodMeshData.indexCount > 0) {
+      entry.chunk.lodAlloc = this.lodIndirectRenderer.uploadChunk(
+        lodMeshData.vertices, lodMeshData.indices,
+        entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
+      );
+    }
+  }
+
+  getLODDrawCalls(): ChunkDrawCall[] {
+    const calls: ChunkDrawCall[] = [];
+    for (const [key, entry] of this.lodChunks) {
+      if (entry.state !== ChunkState.READY) continue;
+      const c = entry.chunk;
+      if (!c.lodAlloc) continue;
+      if (!this.isChunkInFrustum(c)) continue;
+
+      // Skip if full-detail chunk is already rendering (avoid double-draw)
+      const fullEntry = this.chunks.get(key);
+      if (fullEntry && fullEntry.state === ChunkState.READY && fullEntry.chunk.solidAlloc) continue;
+
+      calls.push({
+        vertexBuffer: this.lodIndirectRenderer.vertexMega.buffer,
+        indexBuffer: this.lodIndirectRenderer.indexMega.buffer,
+        indexCount: c.lodAlloc.indexCount,
+        firstIndex: c.lodAlloc.firstIndex,
+        baseVertex: c.lodAlloc.baseVertex,
+      });
+    }
+    return calls;
   }
 }

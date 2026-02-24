@@ -158,20 +158,22 @@ async function main() {
     pipeline.updatePointLights(pointLights);
 
     const drawCalls = chunkManager.getDrawCalls();
+    const lodDrawCalls = chunkManager.getLODDrawCalls();
+    const allSolidDrawCalls = [...drawCalls, ...lodDrawCalls];
     const waterDrawCalls = chunkManager.getWaterDrawCalls();
     const vegDrawCalls = chunkManager.getVegetationDrawCalls();
 
-    hud.setDrawInfo(drawCalls.length, waterDrawCalls.length);
+    hud.setDrawInfo(allSolidDrawCalls.length, waterDrawCalls.length);
 
     try {
-      pipeline.render(drawCalls, waterDrawCalls, vegDrawCalls);
+      pipeline.render(allSolidDrawCalls, waterDrawCalls, vegDrawCalls);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       hud.setError(`Render: ${msg.slice(0, 120)}`);
       console.error('[Render Error]', e);
     }
 
-    hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed(), dayNightCycle.getTimeString());
+    hud.update(camera.position, chunkManager.totalChunks, seed, camera.getSpeed(), dayNightCycle.getTimeString(), chunkManager.totalLODChunks);
 
     requestAnimationFrame(frame);
   }

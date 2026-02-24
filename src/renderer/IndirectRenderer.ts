@@ -56,32 +56,37 @@ export class IndirectRenderer {
   // Vertex stride (28 bytes for solid, same for vegetation)
   static readonly VERTEX_STRIDE = 28;
 
-  constructor(device: GPUDevice) {
+  constructor(
+    device: GPUDevice,
+    vertexCapacity = DEFAULT_VERTEX_CAPACITY,
+    indexCapacity = DEFAULT_INDEX_CAPACITY,
+    maxChunks = MAX_CHUNKS,
+  ) {
     this.device = device;
 
     this.vertexMega = new MegaBuffer(
-      device, DEFAULT_VERTEX_CAPACITY,
+      device, vertexCapacity,
       GPUBufferUsage.VERTEX,
     );
     this.indexMega = new MegaBuffer(
-      device, DEFAULT_INDEX_CAPACITY,
+      device, indexCapacity,
       GPUBufferUsage.INDEX,
     );
 
     // Pre-allocate slot indices (reversed so pop() gives lowest first)
-    for (let i = MAX_CHUNKS - 1; i >= 0; i--) {
+    for (let i = maxChunks - 1; i >= 0; i--) {
       this.freeSlots.push(i);
     }
 
     // Chunk metadata buffer (storage, read by compute)
     this.chunkMetaBuffer = device.createBuffer({
-      size: MAX_CHUNKS * CHUNK_META_SIZE,
+      size: maxChunks * CHUNK_META_SIZE,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
     // Indirect draw args buffer (storage + indirect)
     this.indirectArgsBuffer = device.createBuffer({
-      size: MAX_CHUNKS * INDIRECT_ARGS_SIZE,
+      size: maxChunks * INDIRECT_ARGS_SIZE,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
     });
 
@@ -98,7 +103,7 @@ export class IndirectRenderer {
     });
 
     // CPU-side metadata (12 floats per chunk = 48 bytes)
-    this.metaData = new Float32Array(MAX_CHUNKS * 12);
+    this.metaData = new Float32Array(maxChunks * 12);
 
     // Create compute pipeline
     const cullModule = device.createShaderModule({ code: frustumCullShader });
