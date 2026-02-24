@@ -6,6 +6,13 @@ import { TerrainGenerator } from './TerrainGenerator';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH } from '../constants';
 import { Config } from '../config/Config';
 
+const FOREST_DENSITY_MULTIPLIER = 3;
+const SPARSE_BIOME_SHIFT = 1;
+const MAX_ATTEMPTS_MULTIPLIER = 4;
+const TREE_CLEARANCE_HEIGHT = 8;
+const TUNDRA_REJECT_THRESHOLD = 0.5;
+const MOUNTAINS_REJECT_THRESHOLD = 0.3;
+
 export class TreeGenerator {
   private seed: number;
   private terrainGen: TerrainGenerator | null;
@@ -21,7 +28,7 @@ export class TreeGenerator {
     const rng = new SeededRandom(chunkSeed);
 
     const maxTrees = this.getMaxTreesForChunk(chunk, rng);
-    const maxAttempts = trees.perChunk * 4;
+    const maxAttempts = trees.perChunk * MAX_ATTEMPTS_MULTIPLIER;
     let treesPlaced = 0;
 
     for (let i = 0; i < maxAttempts && treesPlaced < maxTrees; i++) {
@@ -52,10 +59,10 @@ export class TreeGenerator {
     const biome = this.terrainGen.getBiome(centerX, centerZ, 64);
 
     switch (biome) {
-      case BiomeType.FOREST: return perChunk * 3;
+      case BiomeType.FOREST: return perChunk * FOREST_DENSITY_MULTIPLIER;
       case BiomeType.PLAINS: return perChunk;
-      case BiomeType.TUNDRA: return Math.max(1, perChunk >> 1);
-      case BiomeType.MOUNTAINS: return Math.max(1, perChunk >> 1);
+      case BiomeType.TUNDRA: return Math.max(1, perChunk >> SPARSE_BIOME_SHIFT);
+      case BiomeType.MOUNTAINS: return Math.max(1, perChunk >> SPARSE_BIOME_SHIFT);
       case BiomeType.DESERT: return 0;
       case BiomeType.OCEAN: return 0;
       default: return perChunk;
@@ -68,8 +75,8 @@ export class TreeGenerator {
     switch (biome) {
       case BiomeType.DESERT: return false;
       case BiomeType.OCEAN: return false;
-      case BiomeType.TUNDRA: return rng.next() > 0.5;
-      case BiomeType.MOUNTAINS: return rng.next() > 0.3;
+      case BiomeType.TUNDRA: return rng.next() > TUNDRA_REJECT_THRESHOLD;
+      case BiomeType.MOUNTAINS: return rng.next() > MOUNTAINS_REJECT_THRESHOLD;
       default: return true;
     }
   }
@@ -88,7 +95,7 @@ export class TreeGenerator {
     const surfaceBlock = chunk.getBlock(x, surfaceY, z);
     if (surfaceBlock !== BlockType.GRASS_BLOCK && surfaceBlock !== BlockType.SNOW) return false;
 
-    for (let y = surfaceY + 1; y < surfaceY + 8 && y < CHUNK_HEIGHT; y++) {
+    for (let y = surfaceY + 1; y < surfaceY + TREE_CLEARANCE_HEIGHT && y < CHUNK_HEIGHT; y++) {
       if (chunk.getBlock(x, y, z) !== BlockType.AIR) return false;
     }
     return true;

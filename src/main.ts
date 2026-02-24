@@ -16,6 +16,12 @@ import { buildRenderingTab } from './ui/inspector/RenderingTab';
 import { buildCameraTab } from './ui/inspector/CameraTab';
 import { buildEnvironmentTab } from './ui/inspector/EnvironmentTab';
 
+declare global {
+  interface Window {
+    __voxelCleanup?: () => void;
+  }
+}
+
 async function main() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 
@@ -108,7 +114,7 @@ async function main() {
     Config.removeHandler(onConfigChange);
   }
   // Expose for potential re-init (not called during normal operation)
-  (window as unknown as Record<string, unknown>).__voxelCleanup = cleanup;
+  window.__voxelCleanup = cleanup;
 
   // Game loop
   let lastTime = performance.now();

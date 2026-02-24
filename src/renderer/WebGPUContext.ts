@@ -33,6 +33,10 @@ export class WebGPUContext {
 
     ctx.device.lost.then((info) => {
       console.error('WebGPU device lost:', info.message);
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:99999;color:#fff;font-family:sans-serif;flex-direction:column;gap:16px';
+      overlay.innerHTML = `<div style="font-size:20px">GPU device was lost</div><button style="padding:8px 24px;font-size:16px;cursor:pointer" onclick="location.reload()">Reload Page</button>`;
+      document.body.appendChild(overlay);
     });
 
     // Catch GPU validation errors

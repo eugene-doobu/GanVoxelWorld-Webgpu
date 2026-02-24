@@ -14,6 +14,23 @@ export class VillageGenerator {
   private static readonly VILLAGE_RADIUS = 24;
   private static readonly BLEND_MARGIN = 6;
 
+  private static readonly PLAZA_RADIUS = 6;
+
+  private static readonly TOWER_OFFSET_X = 2;
+  private static readonly TOWER_OFFSET_Z = 2;
+  private static readonly TOWER_HEIGHT = 16;
+  private static readonly TOWER_WALL_SIZE = 5;
+  private static readonly TOWER_WINDOW_MIN_Y = 5;
+  private static readonly TOWER_WINDOW_MAX_Y = 7;
+
+  private static readonly HOUSE_OFFSET_X = -8;
+  private static readonly HOUSE_OFFSET_Z = -6;
+  private static readonly HOUSE_WIDTH = 7;
+  private static readonly HOUSE_DEPTH = 5;
+  private static readonly HOUSE_WALL_HEIGHT = 5;
+
+  private static readonly DIRT_FILL_DEPTH = 3;
+
   constructor(seed: number, private terrainGen: TerrainGenerator) {
     const rng = new SeededRandom(seed + 77777);
 
@@ -125,7 +142,7 @@ export class VillageGenerator {
           chunk.setBlock(localX, y, localZ, BlockType.AIR);
         }
         chunk.setBlock(localX, targetY, localZ, BlockType.GRASS_BLOCK);
-        for (let y = targetY - 1; y >= targetY - 3 && y > 0; y--) {
+        for (let y = targetY - 1; y >= targetY - VillageGenerator.DIRT_FILL_DEPTH && y > 0; y--) {
           chunk.setBlock(localX, y, localZ, BlockType.DIRT);
         }
       }
@@ -136,7 +153,7 @@ export class VillageGenerator {
     const cx = this.villageCenterX;
     const cz = this.villageCenterZ;
     const y = this.villageBaseY;
-    const plazaRadius = 6;
+    const plazaRadius = VillageGenerator.PLAZA_RADIUS;
 
     // Circular cobblestone floor
     for (let dx = -plazaRadius; dx <= plazaRadius; dx++) {
@@ -163,11 +180,11 @@ export class VillageGenerator {
   }
 
   private buildWatchtower(chunk: Chunk): void {
-    const tx = this.villageCenterX + 2;
-    const tz = this.villageCenterZ + 2;
+    const tx = this.villageCenterX + VillageGenerator.TOWER_OFFSET_X;
+    const tz = this.villageCenterZ + VillageGenerator.TOWER_OFFSET_Z;
     const baseY = this.villageBaseY;
-    const towerHeight = 16;
-    const wallSize = 5; // 5x5 outer, 3x3 interior
+    const towerHeight = VillageGenerator.TOWER_HEIGHT;
+    const wallSize = VillageGenerator.TOWER_WALL_SIZE;
 
     // Build 5x5 hollow stone brick walls
     for (let dy = 1; dy <= towerHeight; dy++) {
@@ -186,7 +203,7 @@ export class VillageGenerator {
     }
 
     // Window openings on each wall face at levels 5-7
-    for (let dy = 5; dy <= 7; dy++) {
+    for (let dy = VillageGenerator.TOWER_WINDOW_MIN_Y; dy <= VillageGenerator.TOWER_WINDOW_MAX_Y; dy++) {
       const wy = baseY + dy;
       // North wall center (dz=0, dx=2)
       this.setWorldBlock(chunk, tx + 2, wy, tz, BlockType.GLASS);
@@ -237,12 +254,12 @@ export class VillageGenerator {
   }
 
   private buildHouse(chunk: Chunk): void {
-    const hx = this.villageCenterX - 8;
-    const hz = this.villageCenterZ - 6;
+    const hx = this.villageCenterX + VillageGenerator.HOUSE_OFFSET_X;
+    const hz = this.villageCenterZ + VillageGenerator.HOUSE_OFFSET_Z;
     const baseY = this.villageBaseY;
-    const width = 7;
-    const depth = 5;
-    const wallHeight = 5;
+    const width = VillageGenerator.HOUSE_WIDTH;
+    const depth = VillageGenerator.HOUSE_DEPTH;
+    const wallHeight = VillageGenerator.HOUSE_WALL_HEIGHT;
 
     // Floor
     for (let dx = 0; dx < width; dx++) {

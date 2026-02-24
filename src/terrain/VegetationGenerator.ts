@@ -5,6 +5,10 @@ import { BiomeType } from './BiomeTypes';
 import { TerrainGenerator } from './TerrainGenerator';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH } from '../constants';
 
+const VEGETATION_DENSITY = 0.30;
+const GRASS_RATIO = 0.80;
+const POPPY_RATIO = 0.90;
+
 export class VegetationGenerator {
   private seed: number;
   private terrainGen: TerrainGenerator | null;
@@ -30,7 +34,7 @@ export class VegetationGenerator {
         if (!this.canPlaceVegetation(worldX, worldZ, surfaceY)) continue;
 
         // ~30% density
-        if (rng.next() > 0.30) continue;
+        if (rng.next() > VEGETATION_DENSITY) continue;
 
         // Above must be air
         if (chunk.getBlock(x, surfaceY + 1, z) !== BlockType.AIR) continue;
@@ -38,9 +42,9 @@ export class VegetationGenerator {
         // Distribution: 80% grass, 10% poppy, 10% dandelion
         const roll = rng.next();
         let vegType: number;
-        if (roll < 0.80) {
+        if (roll < GRASS_RATIO) {
           vegType = BlockType.TALL_GRASS;
-        } else if (roll < 0.90) {
+        } else if (roll < POPPY_RATIO) {
           vegType = BlockType.POPPY;
         } else {
           vegType = BlockType.DANDELION;

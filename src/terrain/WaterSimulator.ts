@@ -127,7 +127,7 @@ export class WaterSimulator {
     const qy: number[] = [startY];
     const qz: number[] = [startZ];
     const qd: number[] = [0]; // flow distance
-    const visited = new Set<number>();
+    const visited = new Uint8Array(CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH);
 
     let head = 0;
     while (head < qx.length) {
@@ -136,8 +136,8 @@ export class WaterSimulator {
 
       if (!chunk.isInBounds(x, y, z) || y < 1) continue;
       const idx = Chunk.index(x, y, z);
-      if (visited.has(idx)) continue;
-      visited.add(idx);
+      if (visited[idx]) continue;
+      visited[idx] = 1;
 
       const cur = chunk.getBlock(x, y, z);
       if (cur !== BlockType.AIR) continue;
