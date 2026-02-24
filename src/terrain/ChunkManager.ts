@@ -7,11 +7,12 @@ import { CaveGenerator } from './CaveGenerator';
 import { OreGenerator } from './OreGenerator';
 import { TreeGenerator } from './TreeGenerator';
 import { VegetationGenerator } from './VegetationGenerator';
+import { VillageGenerator } from './VillageGenerator';
 import { WaterSimulator } from './WaterSimulator';
 import { buildChunkMesh, ChunkNeighbors, MeshData } from '../meshing/MeshBuilder';
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
 import { Config } from '../config/Config';
-import { getBlockData } from './BlockTypes';
+import { getBlockData, isBlockTorch, TorchFacing } from './BlockTypes';
 import { IndirectRenderer } from '../renderer/IndirectRenderer';
 
 const enum ChunkState {
@@ -46,6 +47,7 @@ export class ChunkManager {
   private caveGen: CaveGenerator;
   private oreGen: OreGenerator;
   private treeGen: TreeGenerator;
+  private villageGen: VillageGenerator;
   private vegGen: VegetationGenerator;
   private waterSim: WaterSimulator;
 
@@ -70,6 +72,7 @@ export class ChunkManager {
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.villageGen = new VillageGenerator(seed, this.terrainGen);
     this.vegGen = new VegetationGenerator(seed, this.terrainGen);
     this.waterSim = new WaterSimulator();
     this.indirectRenderer = new IndirectRenderer(ctx.device);
@@ -108,6 +111,7 @@ export class ChunkManager {
     this.caveGen = new CaveGenerator(seed);
     this.oreGen = new OreGenerator(seed);
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
+    this.villageGen = new VillageGenerator(seed, this.terrainGen);
     this.vegGen = new VegetationGenerator(seed, this.terrainGen);
     this.waterSim = new WaterSimulator();
   }
@@ -157,6 +161,7 @@ export class ChunkManager {
       this.terrainGen.generate(entry.chunk);
       this.oreGen.generate(entry.chunk);
       this.caveGen.generate(entry.chunk);
+      this.villageGen.generate(entry.chunk);
       this.treeGen.generate(entry.chunk);
       this.vegGen.generate(entry.chunk);
       this.waterSim.generate(entry.chunk);
@@ -404,8 +409,23 @@ export class ChunkManager {
             radius = 2;
           }
 
+          // Torch: offset light position based on facing direction
+          let lx = ox + x + 0.5;
+          let ly = y + 0.5;
+          let lz = oz + z + 0.5;
+          if (isBlockTorch(blockType)) {
+            ly = y + 0.75; // flame is near top
+            const meta = chunk.getBlockMeta(x, y, z);
+            switch (meta) {
+              case TorchFacing.NORTH: lz = oz + z + 0.875; break;
+              case TorchFacing.SOUTH: lz = oz + z + 0.125; break;
+              case TorchFacing.EAST:  lx = ox + x + 0.875; break;
+              case TorchFacing.WEST:  lx = ox + x + 0.125; break;
+            }
+          }
+
           lights.push({
-            position: [ox + x + 0.5, y + 0.5, oz + z + 0.5],
+            position: [lx, ly, lz],
             color: [c[0] / 255, c[1] / 255, c[2] / 255],
             intensity: data.emissive * 2.0,
             radius,

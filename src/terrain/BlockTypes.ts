@@ -26,6 +26,10 @@ export const enum BlockType {
   TALL_GRASS = 80,
   POPPY = 81,
   DANDELION = 82,
+  PLANKS = 90,
+  STONE_BRICKS = 91,
+  GLASS = 92,
+  TORCH = 93,
 }
 
 export interface BlockData {
@@ -93,6 +97,24 @@ reg(BlockType.TALL_GRASS, false,                    58, 148,  40, 255,  0.95,  0
 reg(BlockType.POPPY, false,                        200,  30,  30, 255,  0.90,  0.0,  0.0);
 reg(BlockType.DANDELION, false,                    240, 210,  40, 255,  0.90,  0.0,  0.0);
 
+// Village blocks
+reg(BlockType.PLANKS, true,                        180, 144,  90, 255,  0.85,  0.0,  0.0);
+reg(BlockType.STONE_BRICKS, true,                  120, 120, 120, 255,  0.80,  0.0,  0.0);
+reg(BlockType.GLASS, true,                         180, 220, 240, 255,  0.10,  0.0,  0.0);
+reg(BlockType.TORCH, false,                        255, 200,  80, 255,  0.70,  0.0,  0.85);
+
+export const enum TorchFacing {
+  FLOOR = 0,   // 바닥 위 (기본)
+  NORTH = 1,   // +Z 벽 부착
+  SOUTH = 2,   // -Z 벽 부착
+  EAST  = 3,   // +X 벽 부착
+  WEST  = 4,   // -X 벽 부착
+}
+
+export function isBlockTorch(type: number): boolean {
+  return type === BlockType.TORCH;
+}
+
 export function getBlockData(type: number): BlockData {
   return BLOCK_DATA.get(type) ?? BLOCK_DATA.get(BlockType.AIR)!;
 }
@@ -119,7 +141,7 @@ export function isBlockWater(type: number): boolean {
 }
 
 export function isBlockCutout(type: number): boolean {
-  return type === BlockType.LEAVES || type === BlockType.TALL_GRASS || type === BlockType.POPPY || type === BlockType.DANDELION;
+  return type === BlockType.LEAVES || type === BlockType.TALL_GRASS || type === BlockType.POPPY || type === BlockType.DANDELION || type === BlockType.TORCH;
 }
 
 export function isBlockCrossMesh(type: number): boolean {

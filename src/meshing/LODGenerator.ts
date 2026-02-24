@@ -5,7 +5,7 @@
 // LOD 3: 2×16×2 (8×8×8)
 
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, ATLAS_TILES } from '../constants';
-import { BlockType, isBlockSolid, isBlockWater, isBlockCutout, isBlockCrossMesh } from '../terrain/BlockTypes';
+import { BlockType, isBlockSolid, isBlockWater, isBlockCutout, isBlockCrossMesh, isBlockTorch } from '../terrain/BlockTypes';
 import { Chunk } from '../terrain/Chunk';
 import { buildChunkMesh, ChunkNeighbors, MeshData } from './MeshBuilder';
 
@@ -14,7 +14,7 @@ export interface LODLevel {
   width: number;
   height: number;
   depth: number;
-  blocks: Uint8Array;
+  blocks: Uint8Array | Uint16Array;
 }
 
 export interface LODMeshData {
@@ -39,7 +39,7 @@ export function generateLODLevels(chunk: Chunk): LODLevel[] {
   });
 
   // LOD 1-3: progressively downsampled
-  let prevBlocks = chunk.blocks;
+  let prevBlocks: Uint8Array | Uint16Array = chunk.blocks;
   let prevW = CHUNK_WIDTH, prevH = CHUNK_HEIGHT, prevD = CHUNK_DEPTH;
 
   for (let lod = 1; lod < LOD_FACTORS.length; lod++) {
@@ -63,10 +63,10 @@ export function generateLODLevels(chunk: Chunk): LODLevel[] {
                 const sy = y * 2 + dy;
                 const sz = z * 2 + dz;
                 const idx = sx + sy * prevW + sz * prevW * prevH;
-                const bt = prevBlocks[idx];
+                const bt = prevBlocks[idx] & 0xFF;
 
                 // Skip non-renderable types in majority vote
-                if (bt === BlockType.AIR || isBlockWater(bt) || isBlockCrossMesh(bt)) continue;
+                if (bt === BlockType.AIR || isBlockWater(bt) || isBlockCrossMesh(bt) || isBlockTorch(bt)) continue;
 
                 const c = (counts.get(bt) ?? 0) + 1;
                 counts.set(bt, c);
@@ -138,14 +138,14 @@ export function buildLODMesh(level: LODLevel, worldOffsetX: number, worldOffsetZ
 
   function getBlock(x: number, y: number, z: number): number {
     if (x < 0 || x >= width || y < 0 || y >= height || z < 0 || z >= depth) return BlockType.AIR;
-    return blocks[x + y * width + z * width * height];
+    return blocks[x + y * width + z * width * height] & 0xFF;
   }
 
   for (let z = 0; z < depth; z++) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        const bt = blocks[x + y * width + z * width * height];
-        if (bt === BlockType.AIR || isBlockWater(bt) || isBlockCrossMesh(bt)) continue;
+        const bt = (blocks[x + y * width + z * width * height]) & 0xFF;
+        if (bt === BlockType.AIR || isBlockWater(bt) || isBlockCrossMesh(bt) || isBlockTorch(bt)) continue;
 
         for (let face = 0; face < 6; face++) {
           const no = NEIGHBOR_OFFSETS[face];

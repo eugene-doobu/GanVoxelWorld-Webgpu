@@ -1,5 +1,5 @@
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, ATLAS_TILES } from '../constants';
-import { BlockType, isBlockWater, isBlockSolid, isBlockCutout, isBlockCrossMesh } from '../terrain/BlockTypes';
+import { BlockType, isBlockWater, isBlockSolid, isBlockCutout, isBlockCrossMesh, isBlockTorch, TorchFacing } from '../terrain/BlockTypes';
 import { Chunk } from '../terrain/Chunk';
 
 // Face enum: TOP=0, BOTTOM=1, NORTH=2(+Z), SOUTH=3(-Z), EAST=4(+X), WEST=5(-X)
@@ -344,6 +344,79 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
 
           continue;
         }
+
+        // Torch cross-mesh (X-shaped two diagonal quads, narrower + meta-based offset)
+        if (isBlockTorch(blockType)) {
+          const tileIndex = blockType as number;
+          const tileU = (tileIndex % ATLAS_TILES) * uvSize;
+          const tileV = Math.floor(tileIndex / ATLAS_TILES) * uvSize;
+
+          const meta = chunk.getBlockMeta(x, y, z);
+          // Center offset based on facing direction
+          let cx = 0.5, cz = 0.5;
+          switch (meta) {
+            case TorchFacing.NORTH: cz = 0.875; break; // +Z wall
+            case TorchFacing.SOUTH: cz = 0.125; break; // -Z wall
+            case TorchFacing.EAST:  cx = 0.875; break; // +X wall
+            case TorchFacing.WEST:  cx = 0.125; break; // -X wall
+            // FLOOR(0): default center
+          }
+
+          const wx = chunk.worldOffsetX + x;
+          const wz = chunk.worldOffsetZ + z;
+          const faceIdxPacked = 0 | (blockType << 8);
+          const stickHalf = 0.125; // 2/16 = 2px width
+
+          const yBot = y + 0.01;
+          const yTop = y + 0.99;
+
+          vegVerts.ensure(56);
+          vegIdx.ensure(12);
+
+          // Quad 1: diagonal from (cx-stickHalf, cz-stickHalf) to (cx+stickHalf, cz+stickHalf)
+          const baseT1 = vegVertexCount;
+          vegVerts.pushF32(wx + cx - stickHalf); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + cz - stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx + stickHalf); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + cz + stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx + stickHalf); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + cz + stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx - stickHalf); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + cz - stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegIdx.push6(baseT1 + 0, baseT1 + 2, baseT1 + 1, baseT1 + 0, baseT1 + 3, baseT1 + 2);
+          vegVertexCount += 4;
+
+          // Quad 2: other diagonal from (cx+stickHalf, cz-stickHalf) to (cx-stickHalf, cz+stickHalf)
+          const baseT2 = vegVertexCount;
+          vegVerts.pushF32(wx + cx + stickHalf); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + cz - stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx - stickHalf); vegVerts.pushF32(yBot); vegVerts.pushF32(wz + cz + stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV + uvSize);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx - stickHalf); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + cz + stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU + uvSize); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegVerts.pushF32(wx + cx + stickHalf); vegVerts.pushF32(yTop); vegVerts.pushF32(wz + cz - stickHalf);
+          vegVerts.pushU32(faceIdxPacked);
+          vegVerts.pushF32(tileU); vegVerts.pushF32(tileV);
+          vegVerts.pushF32(1.0);
+          vegIdx.push6(baseT2 + 0, baseT2 + 2, baseT2 + 1, baseT2 + 0, baseT2 + 3, baseT2 + 2);
+          vegVertexCount += 4;
+
+          continue;
+        }
       }
     }
   }
@@ -374,8 +447,8 @@ export function buildChunkMesh(chunk: Chunk, neighbors: ChunkNeighbors | null = 
 
           const blockType = chunk.getBlock(bx, by, bz);
 
-          // Skip non-solid, water, vegetation
-          if (blockType === BlockType.AIR || isBlockWater(blockType) || isBlockCrossMesh(blockType)) {
+          // Skip non-solid, water, vegetation, torches
+          if (blockType === BlockType.AIR || isBlockWater(blockType) || isBlockCrossMesh(blockType) || isBlockTorch(blockType)) {
             grid[u + v * uMax] = NO_FACE;
             continue;
           }

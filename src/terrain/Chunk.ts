@@ -14,7 +14,7 @@ export const TOTAL_SUB_BLOCKS = SUB_BLOCKS_X * SUB_BLOCKS_Y * SUB_BLOCKS_Z; // 5
 export class Chunk {
   readonly chunkX: number;
   readonly chunkZ: number;
-  blocks: Uint8Array;
+  blocks: Uint16Array;
 
   // Occupancy bitmask: 64-bit per sub-block (stored as 2× Uint32 = low32 + high32)
   // Each bit represents whether a block is non-AIR.
@@ -27,8 +27,8 @@ export class Chunk {
   // This avoids storing 64 blocks for homogeneous regions.
   private compressed = false;
   private uniformFlags: Uint8Array | null = null;   // 512 entries: 0=mixed, 1=uniform
-  private uniformTypes: Uint8Array | null = null;   // 512 entries: block type when uniform
-  private detailBlocks: Uint8Array | null = null;   // sparse: only mixed sub-blocks have 64-byte entries
+  private uniformTypes: Uint16Array | null = null;   // 512 entries: block type+meta when uniform
+  private detailBlocks: Uint16Array | null = null;   // sparse: only mixed sub-blocks have 64-entry blocks
   private detailOffsets: Uint16Array | null = null;  // 512 entries: offset into detailBlocks (in 64-byte units)
 
   // Mega buffer allocation for solid mesh (managed by IndirectRenderer)
@@ -54,7 +54,7 @@ export class Chunk {
   constructor(chunkX: number, chunkZ: number) {
     this.chunkX = chunkX;
     this.chunkZ = chunkZ;
-    this.blocks = new Uint8Array(CHUNK_TOTAL_BLOCKS);
+    this.blocks = new Uint16Array(CHUNK_TOTAL_BLOCKS);
     this.occupancy = new Uint32Array(TOTAL_SUB_BLOCKS * 2);
   }
 
@@ -65,9 +65,22 @@ export class Chunk {
     if (!this.isInBounds(x, y, z)) return BlockType.AIR;
 
     if (this.compressed) {
+      return this.getBlockCompressed(x, y, z) & 0xFF;
+    }
+    return this.blocks[Chunk.index(x, y, z)] & 0xFF;
+  }
+
+  getBlockRaw(x: number, y: number, z: number): number {
+    if (!this.isInBounds(x, y, z)) return 0;
+
+    if (this.compressed) {
       return this.getBlockCompressed(x, y, z);
     }
     return this.blocks[Chunk.index(x, y, z)];
+  }
+
+  getBlockMeta(x: number, y: number, z: number): number {
+    return (this.getBlockRaw(x, y, z) >> 8) & 0xFF;
   }
 
   private getBlockCompressed(x: number, y: number, z: number): number {
@@ -96,7 +109,16 @@ export class Chunk {
     if (this.compressed) {
       this.decompress();
     }
-    this.blocks[Chunk.index(x, y, z)] = type;
+    this.blocks[Chunk.index(x, y, z)] = type & 0xFF;
+  }
+
+  setBlockWithMeta(x: number, y: number, z: number, type: number, meta: number): void {
+    if (!this.isInBounds(x, y, z)) return;
+
+    if (this.compressed) {
+      this.decompress();
+    }
+    this.blocks[Chunk.index(x, y, z)] = ((meta & 0xFF) << 8) | (type & 0xFF);
   }
 
   // Compress block data using 4×4×4 sub-block uniformity detection.
@@ -106,7 +128,7 @@ export class Chunk {
     if (this.compressed) return;
 
     this.uniformFlags = new Uint8Array(TOTAL_SUB_BLOCKS);
-    this.uniformTypes = new Uint8Array(TOTAL_SUB_BLOCKS);
+    this.uniformTypes = new Uint16Array(TOTAL_SUB_BLOCKS);
     this.detailOffsets = new Uint16Array(TOTAL_SUB_BLOCKS);
 
     // First pass: count mixed sub-blocks
@@ -147,7 +169,7 @@ export class Chunk {
     }
 
     // Second pass: copy mixed sub-block data
-    this.detailBlocks = new Uint8Array(mixedCount * 64);
+    this.detailBlocks = new Uint16Array(mixedCount * 64);
     for (let sbz = 0; sbz < SUB_BLOCKS_Z; sbz++) {
       for (let sby = 0; sby < SUB_BLOCKS_Y; sby++) {
         for (let sbx = 0; sbx < SUB_BLOCKS_X; sbx++) {
@@ -172,7 +194,7 @@ export class Chunk {
     }
 
     // Release the full block array
-    this.blocks = new Uint8Array(0);
+    this.blocks = new Uint16Array(0);
     this.compressed = true;
   }
 
@@ -180,7 +202,7 @@ export class Chunk {
   decompress(): void {
     if (!this.compressed) return;
 
-    const blocks = new Uint8Array(CHUNK_TOTAL_BLOCKS);
+    const blocks = new Uint16Array(CHUNK_TOTAL_BLOCKS);
 
     for (let sbz = 0; sbz < SUB_BLOCKS_Z; sbz++) {
       for (let sby = 0; sby < SUB_BLOCKS_Y; sby++) {
@@ -260,7 +282,7 @@ export class Chunk {
           for (let lz = 0; lz < SUB_BLOCK_SIZE; lz++) {
             for (let ly = 0; ly < SUB_BLOCK_SIZE; ly++) {
               for (let lx = 0; lx < SUB_BLOCK_SIZE; lx++) {
-                const block = this.blocks[Chunk.index(baseX + lx, baseY + ly, baseZ + lz)];
+                const block = this.blocks[Chunk.index(baseX + lx, baseY + ly, baseZ + lz)] & 0xFF;
                 if (block !== BlockType.AIR) {
                   const bitIdx = lx + ly * SUB_BLOCK_SIZE + lz * SUB_BLOCK_SIZE * SUB_BLOCK_SIZE;
                   if (bitIdx < 32) {

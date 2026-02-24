@@ -77,7 +77,7 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
   let blockType = input.normalIndex >> 8u;
 
   // Determine if this is a cutout block (uses direct atlas UV, not tiled)
-  let isCutout = (blockType == 51u) || (blockType >= 80u && blockType <= 82u);
+  let isCutout = (blockType == 51u) || (blockType >= 80u && blockType <= 82u) || (blockType == 93u);
 
   // Compute atlas UV: cutout blocks use texCoord directly, others use tiled conversion
   var atlasUV: vec2<f32>;
@@ -97,8 +97,8 @@ fn main(input: VertexOutput, @builtin(front_facing) frontFacing: bool) -> GBuffe
   let idx = min(faceIdx, 5u);
 
   var worldNormal: vec3<f32>;
-  if (blockType >= 80u && blockType <= 82u) {
-    // Vegetation: use face normal from geometry, oriented toward camera
+  if ((blockType >= 80u && blockType <= 82u) || blockType == 93u) {
+    // Vegetation/Torch: use face normal from geometry, oriented toward camera
     worldNormal = FACE_NORMALS[idx];
     if (!frontFacing) { worldNormal = -worldNormal; }
   } else {

@@ -433,6 +433,93 @@ function patternDandelion(
   return [0, 0, 0, 0]; // transparent
 }
 
+function patternPlanks(
+  px: number, py: number, br: number, bg: number, bb: number,
+): [number, number, number] {
+  const h1 = hash(px, py, 190);
+  // Horizontal plank lines with wood grain
+  const plankRow = Math.floor(py / 4);
+  const plankOffset = (plankRow % 2) * 5;
+  const localX = (px + plankOffset) % 16;
+  let f = (h1 - 0.5) * 0.15;
+  // Plank seams (horizontal)
+  if (py % 4 === 0) f -= 0.18;
+  // Vertical joint seams
+  if (localX === 0 || localX === 8) f -= 0.12;
+  // Wood grain variation per plank
+  const grainSeed = plankRow * 7 + Math.floor(localX / 8);
+  const grain = hash(px, grainSeed, 191);
+  f += (grain - 0.5) * 0.08;
+  return mixColor(br, bg, bb, f);
+}
+
+function patternStoneBricks(
+  px: number, py: number, br: number, bg: number, bb: number,
+): [number, number, number] {
+  const h1 = hash(px, py, 195);
+  // Brick pattern: staggered rows
+  const row = Math.floor(py / 4);
+  const offset = (row % 2) * 4;
+  const bx = (px + offset) % 8;
+  const by = py % 4;
+  let f = (h1 - 0.5) * 0.18;
+  // Mortar lines
+  if (by === 0 || bx === 0) f -= 0.20;
+  // Occasional weathered spot
+  const h2 = hash(px, py, 196);
+  if (h2 > 0.90) f -= 0.10;
+  if (h2 < 0.08) f += 0.08;
+  return mixColor(br, bg, bb, f);
+}
+
+function patternGlass(
+  px: number, py: number, br: number, bg: number, bb: number,
+): [number, number, number] {
+  const h1 = hash(px, py, 200);
+  let f = (h1 - 0.5) * 0.05;
+  // Subtle diagonal reflection highlight
+  const diag = Math.abs(px - py);
+  if (diag <= 1) f += 0.12;
+  // Frame border
+  if (px === 0 || px === 15 || py === 0 || py === 15) {
+    return mixColor(140, 160, 170, f - 0.10);
+  }
+  return mixColor(br, bg, bb, f);
+}
+
+function patternTorchRGBA(
+  px: number, py: number,
+): [number, number, number, number] {
+  const h1 = hash(px, py, 205);
+  const iy = 15 - py; // 0=top(flame), 15=bottom(handle base)
+  const cx = 7.5;
+
+  // Wooden handle: px 7~8, iy 0~9 (bottom half)
+  if (iy < 10 && Math.abs(px - cx) < 1.2) {
+    const woodF = (h1 - 0.5) * 0.12;
+    const [r, g, b] = mixColor(102, 81, 51, woodF);
+    return [r, g, b, 255];
+  }
+
+  // Flame region: elliptical shape centered around (7.5, 12.5) in iy-space
+  const flameCx = 7.5;
+  const flameCy = 12.5;
+  const fdx = (px - flameCx) / 2.5;  // wider
+  const fdy = (iy - flameCy) / 3.0;  // taller
+  const flameDist = Math.sqrt(fdx * fdx + fdy * fdy);
+  if (flameDist < 1.0 && iy >= 9) {
+    const warmth = 1.0 - flameDist;
+    const flameF = (h1 - 0.5) * 0.15;
+    const r = clamp(Math.round(255 * (0.85 + warmth * 0.15)), 0, 255);
+    const g = clamp(Math.round(200 * (0.7 + warmth * 0.3) + h1 * 20), 0, 255);
+    const b = clamp(Math.round(60 * (0.5 + warmth * 0.3)), 0, 255);
+    const [mr, mg, mb] = mixColor(r, g, b, flameF);
+    return [mr, mg, mb, 255];
+  }
+
+  return [0, 0, 0, 0]; // transparent
+}
+
 function patternDefault(
   px: number, py: number, br: number, bg: number, bb: number,
 ): [number, number, number] {
@@ -636,6 +723,50 @@ function generateHeightMap(blockType: number): number[][] {
         }
       break;
     }
+    case BlockType.PLANKS: {
+      // Plank lines with wood grain
+      for (let y = 0; y < TILE_SIZE; y++)
+        for (let x = 0; x < TILE_SIZE; x++) {
+          const plankRow = Math.floor(y / 4);
+          const plankOffset = (plankRow % 2) * 5;
+          const localX = (x + plankOffset) % 16;
+          const isSeam = y % 4 === 0 || localX === 0 || localX === 8;
+          h[y][x] = isSeam ? 0.0 : 0.3 + hash(x, y, 440) * 0.15;
+        }
+      break;
+    }
+    case BlockType.STONE_BRICKS: {
+      // Staggered brick mortar lines
+      for (let y = 0; y < TILE_SIZE; y++)
+        for (let x = 0; x < TILE_SIZE; x++) {
+          const row = Math.floor(y / 4);
+          const offset = (row % 2) * 4;
+          const bx = (x + offset) % 8;
+          const by = y % 4;
+          const isMortar = by === 0 || bx === 0;
+          h[y][x] = isMortar ? 0.0 : 0.35 + hash(x, y, 445) * 0.2;
+        }
+      break;
+    }
+    case BlockType.GLASS: {
+      // Very smooth with faint diagonal
+      for (let y = 0; y < TILE_SIZE; y++)
+        for (let x = 0; x < TILE_SIZE; x++) {
+          const diag = Math.abs(x - y);
+          h[y][x] = (diag <= 1 ? 0.05 : 0) + hash(x, y, 450) * 0.02;
+        }
+      break;
+    }
+    case BlockType.TORCH: {
+      // Flame and handle bump
+      for (let y = 0; y < TILE_SIZE; y++)
+        for (let x = 0; x < TILE_SIZE; x++) {
+          const dx = x - 7.5, dy = y - 7.5;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          h[y][x] = dist < 4 ? 0.2 + hash(x, y, 455) * 0.1 : hash(x, y, 456) * 0.05;
+        }
+      break;
+    }
     case BlockType.TALL_GRASS:
     case BlockType.POPPY:
     case BlockType.DANDELION: {
@@ -682,6 +813,10 @@ function getNormalStrength(blockType: number): number {
     case BlockType.DIAMOND_ORE: return 1.3;
     case BlockType.SPAWNER: return 1.5;
     case BlockType.CHEST: return 1.0;
+    case BlockType.PLANKS: return 0.8;
+    case BlockType.STONE_BRICKS: return 1.5;
+    case BlockType.GLASS: return 0.1;
+    case BlockType.TORCH: return 0.3;
     case BlockType.TALL_GRASS:
     case BlockType.POPPY:
     case BlockType.DANDELION: return 0.1;
@@ -752,6 +887,15 @@ export class TextureAtlas {
       for (let y = 0; y < TILE_SIZE; y++) {
         for (let x = 0; x < TILE_SIZE; x++) {
           const pixelIndex = ((startY + y) * ATLAS_PIXEL_SIZE + (startX + x)) * 4;
+          // Torch: RGBA with alpha bake (cross-mesh cutout)
+          if (blockType === BlockType.TORCH) {
+            const rgba = patternTorchRGBA(x, y);
+            pixels[pixelIndex + 0] = rgba[0];
+            pixels[pixelIndex + 1] = rgba[1];
+            pixels[pixelIndex + 2] = rgba[2];
+            pixels[pixelIndex + 3] = rgba[3];
+            continue;
+          }
           // Vegetation: single call returns RGBA (pattern + alpha)
           if (isBlockCrossMesh(blockType)) {
             let rgba: [number, number, number, number];
@@ -839,6 +983,16 @@ export class TextureAtlas {
         return patternSpawner(px, py, br, bg, bb);
       case BlockType.CHEST:
         return patternChest(px, py, br, bg, bb);
+      case BlockType.PLANKS:
+        return patternPlanks(px, py, br, bg, bb);
+      case BlockType.STONE_BRICKS:
+        return patternStoneBricks(px, py, br, bg, bb);
+      case BlockType.GLASS:
+        return patternGlass(px, py, br, bg, bb);
+      case BlockType.TORCH: {
+        const [tr, tg, tb] = patternTorchRGBA(px, py);
+        return [tr, tg, tb];
+      }
       case BlockType.TALL_GRASS: {
         const [r, g, b] = patternTallGrass(px, py);
         return [r, g, b];
@@ -984,6 +1138,19 @@ export class TextureAtlas {
           baseM,
           baseE,
         ];
+      }
+      case BlockType.TORCH: {
+        // Flame region has varying emissive
+        const dx = px - 7.5, dy = py - 7.5;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 4.0 && py <= 10) {
+          const flicker = hash(px, py, 207);
+          const emissive = clamp(Math.round(200 + flicker * 55), 0, 255);
+          return [clamp(Math.round(baseR + variation), 0, 255), baseM, emissive];
+        }
+        // Handle region: no emissive
+        if (py > 8) return [clamp(Math.round(230 + variation), 0, 255), baseM, 0];
+        return [clamp(Math.round(baseR + variation), 0, 255), baseM, baseE];
       }
       case BlockType.SPAWNER: {
         // Cage bars are more metallic

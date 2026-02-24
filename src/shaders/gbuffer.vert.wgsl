@@ -54,6 +54,17 @@ fn main(input: VertexInput) -> VertexOutput {
     worldPos.z += cos(freq2) * windStrength * 0.8;
   }
 
+  // Torch flame flicker animation (BlockType.TORCH = 93)
+  if (blockType == 93u) {
+    let windTime = camera.time.x % 628.318;
+    let heightFactor = fract(input.position.y); // ~0.01 at bottom, ~0.99 at top
+    let flickerStrength = 0.04 * heightFactor;
+    let freq1 = input.position.x * 5.0 + input.position.z * 3.0 + windTime * 8.0;
+    let freq2 = input.position.x * 4.0 + input.position.z * 5.5 + windTime * 6.5;
+    worldPos.x += sin(freq1) * flickerStrength;
+    worldPos.z += cos(freq2) * flickerStrength * 0.6;
+  }
+
   output.clipPos = camera.viewProj * vec4<f32>(worldPos, 1.0);
   output.worldPos = worldPos;
   output.texCoord = input.texCoord;
