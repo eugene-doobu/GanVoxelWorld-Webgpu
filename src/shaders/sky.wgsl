@@ -355,12 +355,12 @@ fn cloudHeightGradient(h: f32) -> f32 {
   return smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.5, h);
 }
 
-fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
+fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool, coverage: f32) -> f32 {
   let heightFrac = clamp((worldPos.y - CLOUD_MIN_Y) / (CLOUD_MAX_Y - CLOUD_MIN_Y), 0.0, 1.0);
   let hGrad = cloudHeightGradient(heightFrac);
   if (hGrad < 0.001) { return 0.0; }
 
-  let wind = vec3<f32>(time * 5.0, time * 0.3, time * 2.0);
+  let wind = vec3<f32>(time * 15.0, time * 0.9, time * 6.0);
 
   // Base shape: 3-octave FBM — higher freq for less blobby clouds
   let bp = (worldPos + wind) * scene.cloudParams.x;
@@ -368,8 +368,6 @@ fn sampleCloudDensity(worldPos: vec3<f32>, time: f32, cheap: bool) -> f32 {
             + snoise3d(bp * 2.03)  * 0.25
             + snoise3d(bp * 4.01)  * 0.125;
 
-  // Coverage controlled by uniform (0 = clear sky, 1 = overcast)
-  let coverage = scene.fogParams.w;
   let threshold = 1.0 - coverage;              // high threshold = sparse
   shape = remap01(shape, threshold, threshold + 0.35);
   var density = shape * hGrad;
@@ -405,6 +403,12 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
   let tEnd = min(tMax, 8000.0);
   let stepSize = (tEnd - tStart) / f32(CLOUD_STEPS);
 
+  // Time-varying coverage: slow simplex noise modulates base coverage
+  let baseCoverage = scene.fogParams.w;
+  let coverageNoise = snoise3d(vec3<f32>(time * 0.015, time * 0.007, 0.0)) * 0.25
+                    + snoise3d(vec3<f32>(time * 0.004, 0.0, time * 0.003)) * 0.15;
+  let coverage = clamp(baseCoverage + coverageNoise, 0.05, 0.9);
+
   let cosTheta = dot(rayDir, sunDir);
   let silverLining = pow(clamp(cosTheta, 0.0, 1.0), 5.0);
 
@@ -430,7 +434,7 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
     let t = tStart + (f32(i) + 0.5) * stepSize;
     let pos = rayOrigin + rayDir * t;
 
-    let density = sampleCloudDensity(pos, time, false);
+    let density = sampleCloudDensity(pos, time, false, coverage);
     if (density < 0.01) { continue; }
 
     let extinction = density * scene.cloudParams.y;
@@ -439,7 +443,7 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
     var lightOD = 0.0;
     for (var j = 1u; j <= CLOUD_LIGHT_STEPS; j++) {
       let lPos = pos + sunDir * lightStepSize * f32(j);
-      lightOD += sampleCloudDensity(lPos, time, true) * lightStepSize;
+      lightOD += sampleCloudDensity(lPos, time, true, coverage) * lightStepSize;
     }
 
     // Beer-Lambert with gentle absorption
@@ -577,6 +581,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let moonBright = scene.skyNightParams.y;
     let starTime = scene.skyNightParams.z;
 
+    // Clouds occlude background night elements (stars, nebula, meteors, aurora)
+    let cloudOcclusion = 1.0 - cloud.a;
+
     // Night sky gradient (zenith dark → horizon atmospheric glow)
     skyColor += nightSkyGradient(up) * nightFactor;
 
@@ -590,7 +597,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       var nebulaColor = sampleNebula(rayDir, starTime);
       // Moonlight washes out faint nebula
       nebulaColor *= 1.0 - 0.3 * moonBright;
-      skyColor += nebulaColor * nightFactor;
+      skyColor += nebulaColor * nightFactor * cloudOcclusion;
     }
 
     // Multi-layer star field
@@ -601,12 +608,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       starFieldColor *= horizFade;
       // Moonlight dims stars (bright moon → 40% reduction)
       starFieldColor *= 1.0 - 0.4 * moonBright;
-      skyColor += starFieldColor * nightFactor;
+      skyColor += starFieldColor * nightFactor * cloudOcclusion;
     }
 
     // Meteors (shooting stars)
     if (up > 0.05) {
-      skyColor += sampleMeteor(rayDir, starTime) * nightFactor;
+      skyColor += sampleMeteor(rayDir, starTime) * nightFactor * cloudOcclusion;
     }
 
     // === Aurora Borealis ===
@@ -616,22 +623,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let auroraIntensity = nightFactor * (1.0 - 0.2 * moonBright);
         let auroraColor = aurora.rgb * auroraIntensity;
         // Soft additive blend — aurora glows over stars without harsh replacement
-        skyColor += auroraColor * aurora.a;
+        skyColor += auroraColor * aurora.a * cloudOcclusion;
       }
     }
 
-    // Voxel Moon with phase mask (sunDir = moon direction at night, CPU already negated)
+    // Round Moon with phase mask (sunDir = moon direction at night, CPU already negated)
     let moonDir = sunDir;
     let moonDot2 = dot(rayDir, moonDir);
     let moonRight = normalize(cross(moonDir, vec3<f32>(0.0, 1.0, 0.001)));
     let moonUpDir = normalize(cross(moonRight, moonDir));
     let moonLocalX = dot(rayDir - moonDir * moonDot2, moonRight);
     let moonLocalY = dot(rayDir - moonDir * moonDot2, moonUpDir);
-    let moonDist = max(abs(moonLocalX), abs(moonLocalY)); // square shape
+    let moonDist = length(vec2<f32>(moonLocalX, moonLocalY)); // round shape
     let moonSize = 0.030;
 
     if (moonDist < moonSize && moonDot2 > 0.9) {
-      let edge = smoothstep(moonSize, moonSize * 0.85, moonDist);
+      let edge = smoothstep(moonSize, moonSize * 0.9, moonDist);
       // Normalized coordinates for phase mask (-1 to 1)
       let normX = moonLocalX / moonSize;
       let normY = moonLocalY / moonSize;
