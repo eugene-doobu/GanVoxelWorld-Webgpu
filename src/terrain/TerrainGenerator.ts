@@ -67,6 +67,14 @@ export class TerrainGenerator {
     }
   }
 
+  getSurfaceHeight(worldX: number, worldZ: number): number {
+    const continentalness = this.continentalnessNoise.sample(worldX, worldZ);
+    const heightVariation = this.heightVariationNoise.sample(worldX, worldZ);
+    const baseHeight = this.continentalnessToHeight(continentalness);
+    let height = Math.floor(baseHeight + (heightVariation - 0.5) * 10);
+    return Math.max(1, Math.min(CHUNK_HEIGHT - 1, height));
+  }
+
   getBiome(worldX: number, worldZ: number, surfaceHeight: number, continentalness?: number): BiomeType {
     if (continentalness === undefined) {
       continentalness = this.continentalnessNoise.sample(worldX, worldZ);

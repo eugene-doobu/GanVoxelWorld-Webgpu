@@ -212,7 +212,6 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let N = waterNormal(input.worldPos, frag.time);
   let V = normalize(frag.cameraPos - input.worldPos);
   let viewDist = length(frag.cameraPos - input.worldPos);
-  let isUnderwater = frag.cameraPos.y < frag.waterLevel;
   let dayFactor = smoothstep(0.2, 0.6, frag.sunIntensity);
 
   // ==================== Sun Specular ====================
@@ -230,39 +229,19 @@ fn main(input: FragInput) -> @location(0) vec4f {
 
   let deepColor = mix(vec3f(0.0, 0.01, 0.03), vec3f(0.0, 0.04, 0.12), dayFactor);
 
-  var color: vec3f;
-  var alpha: f32;
+  // Smooth underwater transition (0.3-unit transition zone instead of hard binary switch)
+  let uwBlend = smoothstep(frag.waterLevel + 0.3, frag.waterLevel - 0.3, frag.cameraPos.y);
 
-  if (isUnderwater) {
-    // ==================== UNDERWATER VIEW ====================
-    // sceneColorTex OK — looking up through water surface, SSAO is natural
-    let aboveScene = textureSampleLevel(sceneColorTex, texSampler, screenUV, 0.0).rgb;
-    let cosAngle = abs(dot(N, V));
-    let snellsWindow = smoothstep(0.55, 0.75, cosAngle);
-    let tirColor = deepColor * 0.3 + specular * 0.5;
-    color = mix(tirColor, aboveScene, snellsWindow);
+  // ==================== ABOVE-WATER PATH ====================
+  // Refraction (procedural only — no sceneColorTex, SSAO artifact 방지)
+  let shallowColor = mix(vec3f(0.0, 0.15, 0.25), vec3f(0.05, 0.25, 0.35), dayFactor);
+  let refraction = mix(shallowColor, deepColor, smoothstep(0.0, 5.0, waterDepth));
 
-    let uwDist = min(viewDist, 30.0);
-    color *= exp(-WATER_ABSORB * uwDist * 0.3);
-    let depthBelowSurface = frag.waterLevel - frag.cameraPos.y;
-    color *= exp(-depthBelowSurface * 0.08);
-    alpha = 0.95;
-
-  } else {
-    // ==================== ABOVE-WATER VIEW ====================
-
-    // --- Refraction (PROCEDURAL ONLY — no sceneColorTex, SSAO artifact 방지) ---
-    let shallowColor = mix(vec3f(0.0, 0.15, 0.25), vec3f(0.05, 0.25, 0.35), dayFactor);
-    let refraction = mix(shallowColor, deepColor, smoothstep(0.0, 5.0, waterDepth));
-
-    // --- Reflection ---
-    // 1) SSR ray-march: blocks/terrain (sceneColorTex OK — above-water SSAO correct)
-    let ssrResult = waterSSR(input.worldPos, N, V);
-
-    // 2) Sky/cloud fallback: sample sceneColorTex at sky pixels (depth>0.999 = no SSAO)
-    //    Try several distances along R — R*500 alone often projects behind camera
-    var envReflection = analyticalSky;
-    var foundSky = false;
+  // Reflection (SSR + sky fallback) — skip expensive SSR when fully underwater
+  var ssrResult = vec4f(0.0);
+  var envReflection = analyticalSky;
+  if (uwBlend < 0.99) {
+    ssrResult = waterSSR(input.worldPos, N, V);
     for (var sd = 1; sd <= 5; sd = sd + 1) {
       let dist = f32(sd) * 50.0;
       let skyPt = input.worldPos + R * dist;
@@ -270,42 +249,48 @@ fn main(input: FragInput) -> @location(0) vec4f {
       if (skyScr.x > 0.01 && skyScr.x < 0.99 && skyScr.y > 0.01 && skyScr.y < 0.99) {
         let skyD = textureLoad(sceneDepthTex, vec2i(skyScr.xy * frag.screenSize), 0);
         if (skyD > 0.999) {
-          // Sky pixel — safe to sample (actual sky shader output including clouds, no SSAO)
           envReflection = textureSampleLevel(sceneColorTex, texSampler, skyScr.xy, 0.0).rgb;
-          foundSky = true;
           break;
         }
       }
     }
-
-    // 3) Blend: SSR geometry hit wins over sky fallback
-    let reflection = mix(envReflection, ssrResult.rgb, ssrResult.a) + specular;
-
-    // --- Fresnel compositing ---
-    let NdotV = max(dot(N, V), 0.0);
-    let F0 = 0.04;
-    let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
-    // Deep water: can't see through → surface reflection dominates
-    let depthBoost = smoothstep(0.0, 3.0, waterDepth) * 0.15;
-    let finalFresnel = clamp(fresnel + depthBoost, 0.0, 0.85);
-    color = mix(refraction, reflection, finalFresnel);
-
-    // --- Edge foam ---
-    let foamLine = smoothstep(0.5, 0.0, waterDepth);
-    let foamWave = sin(input.worldPos.x * 8.0 + frag.time * 2.0) * 0.5 + 0.5;
-    let foamWave2 = sin(input.worldPos.z * 6.0 + frag.time * 1.5) * 0.5 + 0.5;
-    let foam = foamLine * (0.5 + 0.5 * foamWave * foamWave2) * dayFactor;
-    color += vec3f(foam * 0.7, foam * 0.75, foam * 0.8);
-
-    alpha = 1.0;
   }
+  let reflection = mix(envReflection, ssrResult.rgb, ssrResult.a) + specular;
 
-  // ==================== Distance Fog ====================
-  if (!isUnderwater) {
-    let fogFactor = clamp((viewDist - frag.fogStart) / (frag.fogEnd - frag.fogStart), 0.0, 1.0);
-    color = mix(color, frag.fogColor, fogFactor);
-    alpha = mix(alpha, 1.0, fogFactor);
-  }
+  let NdotV = max(dot(N, V), 0.0);
+  let F0 = 0.04;
+  let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+  let depthBoost = smoothstep(0.0, 3.0, waterDepth) * 0.15;
+  let finalFresnel = clamp(fresnel + depthBoost, 0.0, 0.85);
+  var aboveColor = mix(refraction, reflection, finalFresnel);
+
+  // Edge foam
+  let foamLine = smoothstep(0.5, 0.0, waterDepth);
+  let foamWave = sin(input.worldPos.x * 8.0 + frag.time * 2.0) * 0.5 + 0.5;
+  let foamWave2 = sin(input.worldPos.z * 6.0 + frag.time * 1.5) * 0.5 + 0.5;
+  let foam = foamLine * (0.5 + 0.5 * foamWave * foamWave2) * dayFactor;
+  aboveColor += vec3f(foam * 0.7, foam * 0.75, foam * 0.8);
+
+  // Distance fog (above-water path only)
+  let fogFactor = clamp((viewDist - frag.fogStart) / (frag.fogEnd - frag.fogStart), 0.0, 1.0);
+  aboveColor = mix(aboveColor, frag.fogColor, fogFactor);
+
+  // ==================== UNDERWATER PATH ====================
+  // sceneColorTex OK — looking up through water surface, SSAO is natural
+  let aboveScene = textureSampleLevel(sceneColorTex, texSampler, screenUV, 0.0).rgb;
+  let cosAngle = abs(dot(N, V));
+  let snellsWindow = smoothstep(0.55, 0.75, cosAngle);
+  let tirColor = deepColor * 0.3 + specular * 0.5;
+  var belowColor = mix(tirColor, aboveScene, snellsWindow);
+
+  let uwDist = min(viewDist, 30.0);
+  belowColor *= exp(-WATER_ABSORB * uwDist * 0.3);
+  let depthBelowSurface = max(frag.waterLevel - frag.cameraPos.y, 0.0);
+  belowColor *= exp(-depthBelowSurface * 0.08);
+
+  // ==================== BLEND ====================
+  var color = mix(aboveColor, belowColor, uwBlend);
+  var alpha = mix(1.0, 0.95, uwBlend);
 
   return vec4f(color, alpha);
 }

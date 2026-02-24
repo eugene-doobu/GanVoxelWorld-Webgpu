@@ -45,17 +45,30 @@ fn starColor(h: f32) -> vec3<f32> {
   else { return vec3<f32>(1.0, 0.75, 0.5); }                 // orange (K/M)
 }
 
+// Multi-frequency star scintillation (Kolmogorov spectrum approximation)
+fn starTwinkle(starTime: f32, phase: f32, elevation: f32) -> f32 {
+  // 4 frequency summation
+  var t = sin(starTime * 1.7 + phase) * 0.35;
+  t += sin(starTime * 4.3 + phase * 2.1) * 0.2;
+  t += sin(starTime * 7.1 + phase * 3.7) * 0.12;
+  t += sin(starTime * 13.0 + phase * 5.3) * 0.08;
+  // Near-horizon: more twinkling (thicker atmosphere)
+  let elevFactor = mix(1.5, 0.5, smoothstep(0.0, 0.5, elevation));
+  return clamp(0.75 + t * elevFactor, 0.3, 1.4);
+}
+
 // Multi-layer star field with color temperature and twinkling
 fn sampleStarField(rayDir: vec3<f32>, elapsedTime: f32) -> vec3<f32> {
   // Spherical coordinates for uniform distribution
   let theta = atan2(rayDir.z, rayDir.x); // azimuth
   let phi = asin(clamp(rayDir.y, -1.0, 1.0));   // elevation
   let starTime = elapsedTime % 628.318; // wrap to avoid sin() precision loss
+  let elevation = max(rayDir.y, 0.0);
 
   var stars = vec3<f32>(0.0);
 
-  // Layer 1: bright stars (large cells, ~3% density)
-  let scale1 = 80.0;
+  // Layer 1: bright stars (large cells, ~6% density)
+  let scale1 = 70.0;
   let uv1 = vec2<f32>(theta * scale1 / PI, phi * scale1 / (PI * 0.5));
   let cell1 = floor(uv1);
   let h1 = hash2(cell1);
@@ -63,17 +76,17 @@ fn sampleStarField(rayDir: vec3<f32>, elapsedTime: f32) -> vec3<f32> {
   let cellCenter1 = cell1 + 0.5 + offset1 * 0.8;
   let dist1 = length(uv1 - cellCenter1);
   let brightness1 = hash(cell1 + vec2<f32>(7.31, 3.17));
-  if (brightness1 > 0.97) {
+  if (brightness1 > 0.94) {
     let falloff1 = exp(-dist1 * dist1 * 80.0);
     let colorHash1 = hash(cell1 + vec2<f32>(13.7, 29.3));
     let col1 = starColor(colorHash1);
-    let twinkle1 = sin(starTime * 1.5 + brightness1 * 100.0) * 0.3 + 0.7;
-    let intensity1 = (brightness1 - 0.97) / 0.03 * 2.5;
+    let twinkle1 = starTwinkle(starTime, brightness1 * 100.0, elevation);
+    let intensity1 = (brightness1 - 0.94) / 0.06 * 2.5;
     stars += col1 * falloff1 * twinkle1 * intensity1;
   }
 
-  // Layer 2: dim stars (small cells, ~1.5% density)
-  let scale2 = 250.0;
+  // Layer 2: medium stars (medium cells, ~3% density)
+  let scale2 = 200.0;
   let uv2 = vec2<f32>(theta * scale2 / PI, phi * scale2 / (PI * 0.5));
   let cell2 = floor(uv2);
   let h2 = hash2(cell2);
@@ -81,13 +94,28 @@ fn sampleStarField(rayDir: vec3<f32>, elapsedTime: f32) -> vec3<f32> {
   let cellCenter2 = cell2 + 0.5 + offset2 * 0.8;
   let dist2 = length(uv2 - cellCenter2);
   let brightness2 = hash(cell2 + vec2<f32>(11.13, 5.71));
-  if (brightness2 > 0.985) {
+  if (brightness2 > 0.97) {
     let falloff2 = exp(-dist2 * dist2 * 120.0);
     let colorHash2 = hash(cell2 + vec2<f32>(17.1, 23.9));
     let col2 = starColor(colorHash2);
-    let twinkle2 = sin(starTime * 2.3 + brightness2 * 77.0) * 0.25 + 0.75;
-    let intensity2 = (brightness2 - 0.985) / 0.015 * 1.2;
+    let twinkle2 = starTwinkle(starTime, brightness2 * 77.0, elevation);
+    let intensity2 = (brightness2 - 0.97) / 0.03 * 1.2;
     stars += col2 * falloff2 * twinkle2 * intensity2;
+  }
+
+  // Layer 3: star dust (fine cells, ~4% density, no twinkling)
+  let scale3 = 500.0;
+  let uv3 = vec2<f32>(theta * scale3 / PI, phi * scale3 / (PI * 0.5));
+  let cell3 = floor(uv3);
+  let h3 = hash2(cell3);
+  let offset3 = h3 - 0.5;
+  let cellCenter3 = cell3 + 0.5 + offset3 * 0.8;
+  let dist3 = length(uv3 - cellCenter3);
+  let brightness3 = hash(cell3 + vec2<f32>(19.37, 7.93));
+  if (brightness3 > 0.96) {
+    let falloff3 = exp(-dist3 * dist3 * 200.0);
+    let intensity3 = (brightness3 - 0.96) / 0.04 * 0.3;
+    stars += vec3<f32>(0.9, 0.92, 1.0) * falloff3 * intensity3;
   }
 
   return stars;
@@ -174,100 +202,143 @@ fn moonPhaseMask(localX: f32, localY: f32, moonPhase: f32) -> f32 {
   return lit * limbDark;
 }
 
-// Multi-layer moon glow
+// Continuous Mie-based moon glow (no discontinuities)
 fn moonGlow(moonDot: f32, moonBrightness: f32) -> vec3<f32> {
-  var glow = vec3<f32>(0.0);
+  let angle = acos(clamp(moonDot, -1.0, 1.0));
+  // Inner aureole (Mie forward scattering, tight peak)
+  let inner = exp(-angle * angle * 8000.0) * vec3<f32>(0.20, 0.22, 0.30);
+  // Corona (medium spread)
+  let corona = exp(-angle * angle * 800.0) * vec3<f32>(0.08, 0.09, 0.15);
+  // Wide atmospheric halo
+  let halo = exp(-angle * 60.0) * vec3<f32>(0.015, 0.018, 0.035);
+  return (inner + corona + halo) * moonBrightness;
+}
 
-  // Inner glow (close to moon disc)
-  if (moonDot > 0.998) {
-    let t = (moonDot - 0.998) / 0.002;
-    glow += vec3<f32>(0.15, 0.17, 0.25) * t * t * moonBrightness;
+// Deterministic meteor (shooting star) system — no state needed
+fn sampleMeteor(rayDir: vec3<f32>, time: f32) -> vec3<f32> {
+  var result = vec3<f32>(0.0);
+  for (var i = 0u; i < 4u; i++) {
+    let slot = f32(i);
+    // Per-slot period: 15~25 second intervals
+    let period = 18.0 + slot * 3.7;
+    let phase = floor(time / period);
+    let localT = fract(time / period);
+    // Active window: 0.0~0.08 (~8% of period = ~1.5s visible)
+    if (localT > 0.08) { continue; }
+    let t = localT / 0.08; // 0→1 over lifetime
+
+    // Start point: hash-determined on upper hemisphere
+    let h = hash2(vec2<f32>(phase * 17.3 + slot * 7.1, slot * 13.7 + 0.5));
+    let theta0 = h.x * 2.0 * PI;
+    let phi0 = 0.3 + h.y * 0.5; // elevation 17°~46°
+    let startDir = vec3<f32>(cos(theta0) * cos(phi0), sin(phi0), sin(theta0) * cos(phi0));
+
+    // Drift direction (slightly downward)
+    let h2 = hash2(vec2<f32>(phase * 31.1 + slot, slot * 23.3));
+    let drift = normalize(vec3<f32>(h2.x - 0.5, -0.3, h2.y - 0.5));
+    let trailLen = 0.06;
+    let headPos = normalize(startDir + drift * t * 0.3);
+
+    // Distance from ray to head
+    let headDot = dot(rayDir, headPos);
+    let headAngle = acos(clamp(headDot, -1.0, 1.0));
+
+    // Tail position
+    let tailPos = normalize(startDir + drift * max(t - trailLen, 0.0) * 0.3);
+
+    // Head brightness (fade in→out)
+    let brightness = smoothstep(0.0, 0.15, t) * smoothstep(1.0, 0.5, t);
+    let glow = exp(-headAngle * headAngle * 15000.0) * brightness * 3.0;
+
+    // Tail glow (wider, dimmer)
+    let midPos = normalize(mix(headPos, tailPos, 0.5));
+    let midDot = dot(rayDir, midPos);
+    let midAngle = acos(clamp(midDot, -1.0, 1.0));
+    let tailGlow = exp(-midAngle * midAngle * 5000.0) * brightness * 1.0;
+
+    let meteorColor = vec3<f32>(0.9, 0.85, 0.7); // warm white
+    result += meteorColor * (glow + tailGlow);
   }
-
-  // Mid halo (Mie scattering)
-  if (moonDot > 0.990) {
-    let t = (moonDot - 0.990) / 0.010;
-    glow += vec3<f32>(0.06, 0.07, 0.12) * t * t * moonBrightness;
-  }
-
-  // Outer atmospheric glow (wide, faint)
-  if (moonDot > 0.970) {
-    let t = (moonDot - 0.970) / 0.030;
-    glow += vec3<f32>(0.015, 0.018, 0.035) * t * moonBrightness;
-  }
-
-  return glow;
+  return result;
 }
 
 // === 3D Simplex Noise ===
 #include "common/noise.wgsl"
 
-// === Aurora Borealis (curtain style) ===
-// Physical model: aurora is a thin vertical SHEET hanging in the sky.
-// Bright where you look along the sheet edge-on (fold lines),
-// dim where you look through it face-on.
-// Ray-march vertical extrusion → fold lines become hanging curtain drapes.
+// === Aurora Borealis (analytic curtain sheet + vertical rays) ===
+// No ray-march loop. Aurora modeled as a thin luminous sheet:
+// - Low-freq noise → horizontal ribbon (curtain) position
+// - High-freq 1D noise → vertical ray structure
+// - Altitude-based decay → bright bottom edge, upper fade
+// snoise3d calls: 6 (down from 64)
 
 fn sampleAurora(rayDir: vec3<f32>, cameraPos: vec3<f32>, time: f32) -> vec4<f32> {
   let up = rayDir.y;
-  if (up < 0.1) { return vec4<f32>(0.0); }
+  if (up < 0.05) { return vec4<f32>(0.0); }
 
-  // Elevation mask — visible between ~10° and ~55°
-  let elevMask = smoothstep(0.1, 0.25, up) * smoothstep(0.85, 0.5, up);
-  if (elevMask < 0.01) { return vec4<f32>(0.0); }
+  // Elevation envelope: ~3°~50° range
+  let elevMask = smoothstep(0.05, 0.15, up) * smoothstep(0.85, 0.45, up);
+  if (elevMask < 0.001) { return vec4<f32>(0.0); }
 
   let t = time * AURORA_SPEED;
-  var col = vec3<f32>(0.0);
-  var totalAlpha = 0.0;
+  let azimuth = atan2(rayDir.x, rayDir.z); // [-PI, PI]
 
-  for (var i = 0u; i < 16u; i++) {
-    let fi = f32(i);
-    let layerT = fi / 15.0;
+  // Curtain ribbon position (low-freq wobble)
+  let curtainBaseElev = 0.32;
+  let wobble1 = (snoise3d(vec3<f32>(azimuth * 0.4, t * 0.08, 0.0)) - 0.5) * 0.24;
+  let wobble2 = (snoise3d(vec3<f32>(azimuth * 0.15 + 5.0, t * 0.05, 3.0)) - 0.5) * 0.12;
+  let curtainCenter = curtainBaseElev + wobble1 + wobble2;
+  let distToCurtain = up - curtainCenter;
 
-    // Ray-plane intersection — each step = a horizontal slice of the curtain
-    let height = 0.8 + fi * 0.04;
-    let pt = height / (up * 2.0 + 0.4);
+  // Vertical profile: sharp cutoff below curtain, exp decay above
+  let belowCutoff = smoothstep(-0.02, 0.0, distToCurtain);
+  let verticalDecay = exp(-max(distToCurtain, 0.0) * 4.5);
+  let verticalProfile = belowCutoff * verticalDecay;
+  if (verticalProfile < 0.005) { return vec4<f32>(0.0); }
 
-    // Project ray onto horizontal plane → planeUV.x = depth, planeUV.y = lateral
-    let planeUV = vec2<f32>(rayDir.z, rayDir.x) * pt + cameraPos.xz * 0.00005;
+  // Curtain fold brightness modulation — edge-on is brighter
+  let foldNoise = snoise3d(vec3<f32>(azimuth * 1.5, t * 0.12, 7.0));
+  let foldIntensity = foldNoise * 0.7 + 0.3;  // [0.3, 1.0]
 
-    // === Curtain structure: 1D fold pattern along Y, draped by X ===
+  // Vertical ray structure (high-freq 1D ridge detection)
+  let rayN1 = snoise3d(vec3<f32>(azimuth * 8.0, t * 0.3, 13.0));
+  let rayN2 = snoise3d(vec3<f32>(azimuth * 22.0 + 50.0, t * 0.6, 17.0));
+  let ray1 = pow(max(1.0 - 2.5 * abs(rayN1 - 0.5), 0.0), 1.5);
+  let ray2 = pow(max(1.0 - 3.0 * abs(rayN2 - 0.5), 0.0), 2.0);
+  let rayStructure = ray1 * 0.7 + ray2 * 0.3;
+  // Upper part: rays become more diffuse
+  let raySharpness = mix(rayStructure, 0.5 * (rayStructure + 0.5),
+                         smoothstep(0.0, 0.3, distToCurtain));
 
-    // Drape warp: the fold position shifts along X (depth) → draped hanging shape
-    let drape = snoise3d(vec3<f32>(planeUV.x * 0.12, planeUV.y * 0.06, t * 0.2));
-    // Large-scale sway: entire curtain swings gently over time
-    let sway = snoise3d(vec3<f32>(planeUV.y * 0.04 + 20.0, 0.0, t * 0.15));
-    let warpedY = planeUV.y + (drape - 0.5) * 4.0 + (sway - 0.5) * 5.0;
+  // Temporal shimmer
+  let shimmer = snoise3d(vec3<f32>(azimuth * 4.0, t * 1.2, 23.0));
+  let shimmerFactor = 0.7 + shimmer * 0.3;
 
-    // Fold noise: primarily 1D along lateral axis (Y)
-    // Very weak X dependency → folds are tall, continuous vertical lines
-    let n1 = snoise3d(vec3<f32>(planeUV.x * 0.02, warpedY * 0.5, t * 0.5 + fi * 0.06));
-    let n2 = snoise3d(vec3<f32>(planeUV.x * 0.04 + 50.0, warpedY * 1.1, t * 0.8));
-    var val = n1 * 0.6 + n2 * 0.4;
+  // Combined intensity
+  let intensity = verticalProfile * raySharpness * foldIntensity * shimmerFactor;
 
-    // Fold ridges: bright where noise ≈ 0.5 → visible curtain fold lines
-    val = max(1.0 - 1.5 * abs(val - 0.5), 0.0);
-    val *= val;
-
-    if (val < 0.005) { continue; }
-
-    // Color: bright green-cyan at bottom → purple-magenta at top
-    let green  = vec3<f32>(0.15, 1.3, 0.4);
-    let purple = vec3<f32>(0.45, 0.12, 0.55);
-    let layerColor = mix(green, purple, smoothstep(0.1, 0.9, layerT));
-
-    // Accumulate — brighter layers near top, fade-in at start
-    let weight = exp2(-fi * 0.1 - 1.8) * smoothstep(0.0, 3.0, fi);
-    col += layerColor * val * weight;
-    totalAlpha += val * weight;
+  // Altitude-based color (green → cyan → magenta → red)
+  let heightFrac = clamp(distToCurtain / 0.35, 0.0, 1.0);
+  let green   = vec3<f32>(0.2, 1.0, 0.3);
+  let cyan    = vec3<f32>(0.1, 0.6, 0.4);
+  let magenta = vec3<f32>(0.5, 0.1, 0.4);
+  let red     = vec3<f32>(0.4, 0.05, 0.15);
+  var auroraColor: vec3<f32>;
+  if (heightFrac < 0.3) {
+    auroraColor = mix(green, cyan, heightFrac / 0.3);
+  } else if (heightFrac < 0.65) {
+    auroraColor = mix(cyan, magenta, (heightFrac - 0.3) / 0.35);
+  } else {
+    auroraColor = mix(magenta, red, (heightFrac - 0.65) / 0.35);
   }
 
-  // Bottom edge brighter (curtain hem glow)
-  let bottomGlow = smoothstep(0.4, 0.15, up) * 0.4 + 1.0;
-  col *= elevMask * bottomGlow;
-  totalAlpha = clamp(totalAlpha * 3.0, 0.0, 1.0) * elevMask;
+  // Subtle green hem glow at bottom edge (557.7nm atomic O emission peak)
+  let hemGlow = exp(-max(distToCurtain, 0.0) * 20.0) * 0.5;
+  auroraColor += green * hemGlow;
 
-  return vec4<f32>(col, totalAlpha);
+  let finalColor = auroraColor * intensity * 0.5 * elevMask;
+  let alpha = clamp(intensity * 0.8, 0.0, 1.0) * elevMask;
+  return vec4<f32>(finalColor, alpha);
 }
 
 // === Volumetric cloud functions ===
@@ -345,9 +416,10 @@ fn raymarchClouds(rayOrigin: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>, su
   let dayShadow = vec3<f32>(0.55, 0.65, 0.85);
   let dayLit = sunColor * 0.95 + vec3<f32>(0.05);
 
-  // Night palette: near-black shadow ↔ dim silver-blue moonlight
-  let nightShadow = vec3<f32>(0.01, 0.012, 0.025);
-  let nightLit = vec3<f32>(0.08, 0.1, 0.18);
+  // Night palette: moonBrightness-dependent (brighter clouds under full moon)
+  let mb = scene.skyNightParams.y;
+  let nightShadow = vec3<f32>(0.012, 0.015, 0.030) + vec3<f32>(0.008, 0.010, 0.015) * mb;
+  let nightLit = vec3<f32>(0.08, 0.10, 0.18) + vec3<f32>(0.06, 0.07, 0.10) * mb;
 
   // Blend palettes by dayFactor
   let shadowColor = mix(nightShadow, dayShadow, dayFactor);
@@ -508,9 +580,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Night sky gradient (zenith dark → horizon atmospheric glow)
     skyColor += nightSkyGradient(up) * nightFactor;
 
-    // Horizon atmospheric glow (subtle warm band at horizon)
-    let horizAtmo = exp(-abs(up) * 6.0);
-    skyColor += vec3<f32>(0.008, 0.010, 0.020) * horizAtmo * nightFactor;
+    // Horizon atmospheric glow (moonlight-dependent)
+    let horizAtmo = exp(-abs(up) * 5.0);
+    let horizGlowColor = vec3<f32>(0.010, 0.013, 0.028) + vec3<f32>(0.005, 0.006, 0.010) * moonBright;
+    skyColor += horizGlowColor * horizAtmo * nightFactor;
 
     // Night nebula / Milky Way band
     if (up > 0.05) {
@@ -531,8 +604,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       skyColor += starFieldColor * nightFactor;
     }
 
+    // Meteors (shooting stars)
+    if (up > 0.05) {
+      skyColor += sampleMeteor(rayDir, starTime) * nightFactor;
+    }
+
     // === Aurora Borealis ===
-    if (up > 0.1) {
+    if (up > 0.05) {
       let aurora = sampleAurora(rayDir, scene.cameraPos.xyz, starTime);
       if (aurora.a > 0.001) {
         let auroraIntensity = nightFactor * (1.0 - 0.2 * moonBright);
