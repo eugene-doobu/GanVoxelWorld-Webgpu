@@ -63,6 +63,7 @@ function wgslInclude(): Plugin {
 }
 
 export default defineConfig({
+  base: '/GanVoxelWorld-Webgpu/',
   plugins: [wgslInclude()],
   build: {
     target: 'esnext',
