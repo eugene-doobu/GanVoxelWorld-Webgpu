@@ -15,8 +15,8 @@ export function buildRenderingTab(): InspectorTab {
 
   // Shadows
   const shadows = tab.addSection('Shadows', true);
-  shadows.addField({ type: 'number', label: 'Cascade Count', configPath: 'rendering.shadows.cascadeCount', min: 1, max: 4, step: 1 });
-  shadows.addField({ type: 'number', label: 'Map Size', configPath: 'rendering.shadows.mapSize', min: 512, max: 4096, step: 512 });
+  shadows.addField({ type: 'number', label: 'Cascade Count *', configPath: 'rendering.shadows.cascadeCount', min: 1, max: 4, step: 1 });
+  shadows.addField({ type: 'number', label: 'Map Size *', configPath: 'rendering.shadows.mapSize', min: 512, max: 4096, step: 512 });
   shadows.addField({ type: 'slider', label: 'Split 1', configPath: 'rendering.shadows.cascadeSplits.0', min: 5, max: 100, step: 5 });
   shadows.addField({ type: 'slider', label: 'Split 2', configPath: 'rendering.shadows.cascadeSplits.1', min: 20, max: 200, step: 5 });
   shadows.addField({ type: 'slider', label: 'Split 3', configPath: 'rendering.shadows.cascadeSplits.2', min: 50, max: 500, step: 10 });
@@ -25,7 +25,7 @@ export function buildRenderingTab(): InspectorTab {
   const ssao = tab.addSection('SSAO', true);
   ssao.addField({ type: 'slider', label: 'Radius', configPath: 'rendering.ssao.radius', min: 0.1, max: 5, step: 0.1 });
   ssao.addField({ type: 'slider', label: 'Bias', configPath: 'rendering.ssao.bias', min: 0.001, max: 0.1, step: 0.001 });
-  ssao.addField({ type: 'number', label: 'Kernel Size', configPath: 'rendering.ssao.kernelSize', min: 4, max: 64, step: 4 });
+  ssao.addField({ type: 'number', label: 'Kernel Size *', configPath: 'rendering.ssao.kernelSize', min: 4, max: 64, step: 4 });
 
   // Bloom
   const bloom = tab.addSection('Bloom');
@@ -58,18 +58,6 @@ export function buildRenderingTab(): InspectorTab {
   autoExposure.addField({ type: 'slider', label: 'Min Exposure', configPath: 'rendering.autoExposure.minExposure', min: 0.01, max: 1.0, step: 0.01 });
   autoExposure.addField({ type: 'slider', label: 'Max Exposure', configPath: 'rendering.autoExposure.maxExposure', min: 1.0, max: 10.0, step: 0.1 });
 
-  // PCSS Shadows
-  const pcss = tab.addSection('PCSS Shadows');
-  pcss.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.pcss.enabled' });
-  pcss.addField({ type: 'slider', label: 'Light Size', configPath: 'rendering.pcss.lightSize', min: 0.5, max: 10, step: 0.5 });
-
-  // Post Process
-  const postProcess = tab.addSection('Post Process');
-  postProcess.addField({ type: 'toggle', label: 'Vignette', configPath: 'rendering.postProcess.vignette.enabled' });
-  postProcess.addField({ type: 'slider', label: 'Vignette Intensity', configPath: 'rendering.postProcess.vignette.intensity', min: 0, max: 1, step: 0.05 });
-  postProcess.addField({ type: 'toggle', label: 'Chromatic Aberration', configPath: 'rendering.postProcess.chromaticAberration.enabled' });
-  postProcess.addField({ type: 'slider', label: 'CA Intensity', configPath: 'rendering.postProcess.chromaticAberration.intensity', min: 0, max: 0.01, step: 0.001 });
-
   // Motion Blur
   const motionBlur = tab.addSection('Motion Blur');
   motionBlur.addField({ type: 'toggle', label: 'Enabled', configPath: 'rendering.motionBlur.enabled' });
@@ -81,6 +69,12 @@ export function buildRenderingTab(): InspectorTab {
   dof.addField({ type: 'slider', label: 'Focus Distance', configPath: 'rendering.dof.focusDistance', min: 1, max: 200, step: 1 });
   dof.addField({ type: 'slider', label: 'Aperture', configPath: 'rendering.dof.aperture', min: 0.01, max: 0.5, step: 0.01 });
   dof.addField({ type: 'slider', label: 'Max Blur', configPath: 'rendering.dof.maxBlur', min: 1, max: 30, step: 1 });
+
+  // Footer note for non-reactive options
+  const note = document.createElement('div');
+  note.style.cssText = 'padding:6px 10px;font-size:10px;color:#888;border-top:1px solid #333;margin-top:8px;';
+  note.textContent = '* Requires reload to take effect';
+  tab.el.appendChild(note);
 
   return tab;
 }

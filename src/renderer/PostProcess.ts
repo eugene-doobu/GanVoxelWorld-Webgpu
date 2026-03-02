@@ -227,8 +227,8 @@ export class PostProcess {
       dof.focusDistance,
       dof.aperture,
       dof.maxBlur,
-      0.1,    // nearPlane
-      1000.0, // farPlane
+      Config.data.camera.near,
+      Config.data.camera.far,
       0, 0, 0, // pad
     ]));
 
@@ -923,7 +923,9 @@ export class PostProcess {
     // Update DoF params from Config
     const dof = Config.data.rendering.dof;
     this.ctx.device.queue.writeBuffer(this.dofParamsBuffer, 0, new Float32Array([
-      dof.focusDistance, dof.aperture, dof.maxBlur, 0.1, 1000.0, 0, 0, 0,
+      dof.focusDistance, dof.aperture, dof.maxBlur,
+      Config.data.camera.near, Config.data.camera.far,
+      0, 0, 0,
     ]));
   }
 

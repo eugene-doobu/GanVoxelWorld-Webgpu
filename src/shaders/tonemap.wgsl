@@ -66,7 +66,6 @@ fn colorGrade(color: vec3f, timeOfDay: f32) -> vec3f {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Chromatic Aberration — radial RGB channel offset
-  // TODO: connect to Config.data.rendering.postProcess.chromaticAberration
   let caStrength = 0.002;
   let caDir = (input.uv - 0.5) * caStrength;
   let hdrR = textureSampleLevel(hdrTex, linearSampler, input.uv + caDir, 0.0).r;
@@ -98,7 +97,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   color = pow(color, vec3<f32>(1.0 / 2.2));
 
   // Vignette — smooth radial darkening from screen edges
-  // TODO: connect to Config.data.rendering.postProcess.vignette
   let vignetteCoord = input.uv * 2.0 - 1.0;
   let vignetteDist = length(vignetteCoord);
   let vignette = 1.0 - smoothstep(0.5, 1.5, vignetteDist);

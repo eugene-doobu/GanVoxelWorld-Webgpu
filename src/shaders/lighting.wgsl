@@ -131,7 +131,6 @@ fn sampleShadow(worldPos: vec3<f32>, viewDist: f32) -> f32 {
 
   // PCSS (Percentage Closer Soft Shadows)
   let texelSize = 1.0 / 2048.0;
-  // TODO: expose via SceneUniforms when Config integration is ready
   let lightSize = SHADOW_LIGHT_SIZE;
   let bias = 0.002;
 

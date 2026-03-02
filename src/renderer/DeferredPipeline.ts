@@ -833,13 +833,13 @@ export class DeferredPipeline {
     wfF32[8] = dnc.sunColor[0];
     wfF32[9] = dnc.sunColor[1];
     wfF32[10] = dnc.sunColor[2];
-    wfF32[11] = 0.1;   // nearPlane (matches FlyCamera)
+    wfF32[11] = Config.data.camera.near;
     // Compute atmospheric fog color (matches lighting.wgsl atmosphericFogColor)
     const fogCol = this.computeAtmosphericFogColor(view);
     wfF32[12] = fogCol[0];
     wfF32[13] = fogCol[1];
     wfF32[14] = fogCol[2];
-    wfF32[15] = 1000.0; // farPlane (matches FlyCamera)
+    wfF32[15] = Config.data.camera.far;
     wfF32[16] = fogStart;
     wfF32[17] = fogEnd;
     wfF32[18] = this.ctx.canvas.width;

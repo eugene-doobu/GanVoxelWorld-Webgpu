@@ -117,21 +117,6 @@ export interface RenderingAutoExposureConfig {
   maxExposure: number;
 }
 
-export interface RenderingVignetteConfig {
-  enabled: boolean;
-  intensity: number;
-}
-
-export interface RenderingChromaticAberrationConfig {
-  enabled: boolean;
-  intensity: number;
-}
-
-export interface RenderingPostProcessConfig {
-  vignette: RenderingVignetteConfig;
-  chromaticAberration: RenderingChromaticAberrationConfig;
-}
-
 export interface RenderingMotionBlurConfig {
   enabled: boolean;
   strength: number;
@@ -142,11 +127,6 @@ export interface RenderingDoFConfig {
   focusDistance: number;
   aperture: number;
   maxBlur: number;
-}
-
-export interface RenderingPCSSConfig {
-  enabled: boolean;
-  lightSize: number;
 }
 
 export interface RenderingLODConfig {
@@ -163,10 +143,8 @@ export interface RenderingConfig {
   contactShadows: RenderingContactShadowsConfig;
   taa: RenderingTAAConfig;
   autoExposure: RenderingAutoExposureConfig;
-  postProcess: RenderingPostProcessConfig;
   motionBlur: RenderingMotionBlurConfig;
   dof: RenderingDoFConfig;
-  pcss: RenderingPCSSConfig;
   lod: RenderingLODConfig;
 }
 
@@ -181,7 +159,7 @@ export interface CameraConfig {
 
 export interface CloudConfig {
   enabled: boolean;           // default true
-  coverage: number;           // [0, 1] default 0.3
+  coverage: number;           // [0, 1] default 0.25
   density: number;            // [0.1, 3] default 0.5
   cloudBase: number;          // [100, 1000] default 300
   cloudHeight: number;        // [50, 500] default 200
@@ -259,15 +237,11 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'rendering.autoExposure.keyValue':     { min: 0.01, max: 1 },
   'rendering.autoExposure.minExposure':  { min: 0.001, max: 10 },
   'rendering.autoExposure.maxExposure':  { min: 0.01, max: 100 },
-  // Rendering - post process
-  'rendering.postProcess.vignette.intensity':           { min: 0, max: 2 },
-  'rendering.postProcess.chromaticAberration.intensity': { min: 0, max: 0.05 },
-  // Rendering - motion blur / DoF / PCSS
+  // Rendering - motion blur / DoF
   'rendering.motionBlur.strength':  { min: 0, max: 2 },
   'rendering.dof.focusDistance':    { min: 0.1, max: 1000 },
   'rendering.dof.aperture':         { min: 0.001, max: 1 },
   'rendering.dof.maxBlur':          { min: 0, max: 50 },
-  'rendering.pcss.lightSize':       { min: 0.1, max: 20 },
   // Rendering - LOD
   'rendering.lod.renderDistance':   { min: 0, max: 32 },
   // Terrain - noise
@@ -297,6 +271,23 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'terrain.caves.waterTable.baseLevel':  { min: 0, max: 60 },
   'terrain.caves.waterTable.amplitude':  { min: 0, max: 30 },
   'terrain.caves.waterTable.noiseScale': { min: 10, max: 300 },
+  // Terrain - ores
+  'terrain.ores.coal.minY':     { min: 0, max: 255 },
+  'terrain.ores.coal.maxY':     { min: 0, max: 255 },
+  'terrain.ores.coal.attempts': { min: 0, max: 50 },
+  'terrain.ores.coal.veinSize': { min: 1, max: 20 },
+  'terrain.ores.iron.minY':     { min: 0, max: 255 },
+  'terrain.ores.iron.maxY':     { min: 0, max: 255 },
+  'terrain.ores.iron.attempts': { min: 0, max: 50 },
+  'terrain.ores.iron.veinSize': { min: 1, max: 20 },
+  'terrain.ores.gold.minY':     { min: 0, max: 255 },
+  'terrain.ores.gold.maxY':     { min: 0, max: 255 },
+  'terrain.ores.gold.attempts': { min: 0, max: 50 },
+  'terrain.ores.gold.veinSize': { min: 1, max: 20 },
+  'terrain.ores.diamond.minY':     { min: 0, max: 255 },
+  'terrain.ores.diamond.maxY':     { min: 0, max: 255 },
+  'terrain.ores.diamond.attempts': { min: 0, max: 50 },
+  'terrain.ores.diamond.veinSize': { min: 1, max: 20 },
   // Terrain - trees
   'terrain.trees.perChunk':       { min: 0, max: 20 },
   'terrain.trees.minTrunkHeight': { min: 1, max: 20 },
@@ -323,6 +314,10 @@ const CROSS_CONSTRAINTS: [string, string][] = [
   ['terrain.caves.minLength', 'terrain.caves.maxLength'],
   ['terrain.caves.minRadius', 'terrain.caves.maxRadius'],
   ['terrain.caves.minY', 'terrain.caves.maxY'],
+  ['terrain.ores.coal.minY', 'terrain.ores.coal.maxY'],
+  ['terrain.ores.iron.minY', 'terrain.ores.iron.maxY'],
+  ['terrain.ores.gold.minY', 'terrain.ores.gold.maxY'],
+  ['terrain.ores.diamond.minY', 'terrain.ores.diamond.maxY'],
   ['rendering.autoExposure.minExposure', 'rendering.autoExposure.maxExposure'],
 ];
 
@@ -402,16 +397,11 @@ class ConfigManager {
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
         bloom: { mipLevels: 5, threshold: 1.5, intensity: 0.08 },
         fog: { startRatio: 0.85, endRatio: 1.15 },
-        contactShadows: { enabled: false, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
+        contactShadows: { enabled: true, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
         taa: { enabled: true, blendFactor: 0.9 },
         autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.10, minExposure: 0.2, maxExposure: 1.8 },
-        postProcess: {
-          vignette: { enabled: true, intensity: 0.4 },
-          chromaticAberration: { enabled: true, intensity: 0.002 },
-        },
         motionBlur: { enabled: false, strength: 0.5 },
         dof: { enabled: false, focusDistance: 50.0, aperture: 0.05, maxBlur: 10.0 },
-        pcss: { enabled: true, lightSize: 3.0 },
         lod: { enabled: true, renderDistance: 14 },
       },
       camera: {
@@ -426,7 +416,7 @@ class ConfigManager {
         },
         cloud: {
           enabled: true,
-          coverage: 0.15,
+          coverage: 0.25,
           density: 0.5,
           cloudBase: 300,
           cloudHeight: 200,
