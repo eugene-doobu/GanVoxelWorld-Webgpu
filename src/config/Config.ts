@@ -22,6 +22,12 @@ export interface TerrainBiomesConfig {
   oceanThreshold: number;
 }
 
+export interface WaterTableConfig {
+  baseLevel: number;
+  amplitude: number;
+  noiseScale: number;
+}
+
 export interface TerrainCavesConfig {
   count: number;
   minLength: number;
@@ -30,6 +36,7 @@ export interface TerrainCavesConfig {
   maxRadius: number;
   minY: number;
   maxY: number;
+  waterTable: WaterTableConfig;
 }
 
 export interface OreConfig {
@@ -173,11 +180,15 @@ export interface CameraConfig {
 }
 
 export interface CloudConfig {
-  coverage: number;
-  baseNoiseScale: number;
-  extinction: number;
-  multiScatterFloor: number;
-  detailStrength: number;
+  enabled: boolean;           // default true
+  coverage: number;           // [0, 1] default 0.3
+  density: number;            // [0.1, 3] default 0.5
+  cloudBase: number;          // [100, 1000] default 300
+  cloudHeight: number;        // [50, 500] default 200
+  detailStrength: number;     // [0, 1] default 0.3
+  windSpeed: number;          // [0, 50] default 10
+  silverLining: number;       // [0, 3] default 1.5
+  multiScatterFloor: number;  // [0, 0.5] default 0.15
 }
 
 export interface SkyConfig {
@@ -283,6 +294,9 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'terrain.caves.maxRadius': { min: 0.5, max: 20 },
   'terrain.caves.minY':      { min: 0, max: 255 },
   'terrain.caves.maxY':      { min: 0, max: 255 },
+  'terrain.caves.waterTable.baseLevel':  { min: 0, max: 60 },
+  'terrain.caves.waterTable.amplitude':  { min: 0, max: 30 },
+  'terrain.caves.waterTable.noiseScale': { min: 10, max: 300 },
   // Terrain - trees
   'terrain.trees.perChunk':       { min: 0, max: 20 },
   'terrain.trees.minTrunkHeight': { min: 1, max: 20 },
@@ -292,11 +306,14 @@ const VALIDATION_RULES: Record<string, NumberRule> = {
   'environment.dayDurationSeconds': { min: 10, max: 36000 },
   'environment.sky.starBrightness':      { min: 0, max: 2 },
   'environment.sky.nebulaIntensity':     { min: 0, max: 2 },
-  'environment.cloud.coverage':         { min: 0, max: 1 },
-  'environment.cloud.baseNoiseScale':   { min: 0.0001, max: 0.1 },
-  'environment.cloud.extinction':       { min: 0.01, max: 5 },
-  'environment.cloud.multiScatterFloor': { min: 0, max: 1 },
+  'environment.cloud.coverage':          { min: 0, max: 1 },
+  'environment.cloud.density':           { min: 0.1, max: 3 },
+  'environment.cloud.cloudBase':         { min: 100, max: 1000 },
+  'environment.cloud.cloudHeight':       { min: 50, max: 500 },
   'environment.cloud.detailStrength':    { min: 0, max: 1 },
+  'environment.cloud.windSpeed':         { min: 0, max: 50 },
+  'environment.cloud.silverLining':      { min: 0, max: 3 },
+  'environment.cloud.multiScatterFloor': { min: 0, max: 0.5 },
 };
 
 // Cross-property constraints: [pathA, pathB] where A must be < B
@@ -369,6 +386,7 @@ class ConfigManager {
         caves: {
           count: 8, minLength: 50, maxLength: 150,
           minRadius: 1.5, maxRadius: 4.0, minY: 10, maxY: 60,
+          waterTable: { baseLevel: 25, amplitude: 12, noiseScale: 80 },
         },
         ores: {
           coal: { minY: 5, maxY: 128, attempts: 20, veinSize: 8 },
@@ -382,11 +400,11 @@ class ConfigManager {
         general: { renderDistance: 14, timeBudgetMs: 12 },
         shadows: { cascadeCount: 3, mapSize: 2048, cascadeSplits: [20, 60, 160] },
         ssao: { kernelSize: 16, radius: 1.5, bias: 0.025 },
-        bloom: { mipLevels: 5, threshold: 1.0, intensity: 0.3 },
+        bloom: { mipLevels: 5, threshold: 1.5, intensity: 0.08 },
         fog: { startRatio: 0.85, endRatio: 1.15 },
         contactShadows: { enabled: false, maxSteps: 16, rayLength: 0.5, thickness: 0.3 },
         taa: { enabled: true, blendFactor: 0.9 },
-        autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.18, minExposure: 0.1, maxExposure: 5.0 },
+        autoExposure: { enabled: true, adaptSpeed: 1.5, keyValue: 0.10, minExposure: 0.2, maxExposure: 1.8 },
         postProcess: {
           vignette: { enabled: true, intensity: 0.4 },
           chromaticAberration: { enabled: true, intensity: 0.002 },
@@ -407,11 +425,15 @@ class ConfigManager {
           nebulaIntensity: 1.0,
         },
         cloud: {
-          coverage: 0.35,
-          baseNoiseScale: 0.0018,
-          extinction: 0.3,
-          multiScatterFloor: 0.35,
-          detailStrength: 0.15,
+          enabled: true,
+          coverage: 0.15,
+          density: 0.5,
+          cloudBase: 300,
+          cloudHeight: 200,
+          detailStrength: 0.3,
+          windSpeed: 10,
+          silverLining: 1.5,
+          multiScatterFloor: 0.15,
         },
       },
     };
@@ -426,9 +448,7 @@ class ConfigManager {
           deepMerge(this.data as unknown as Record<string, unknown>, saved);
         }
       }
-    } catch {
-      // Corrupted data — fall back to defaults
-    }
+    } catch { /* corrupted storage */ }
   }
 
   private scheduleSave(): void {
@@ -436,9 +456,7 @@ class ConfigManager {
     this.saveTimer = setTimeout(() => {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
-      } catch {
-        // Storage full or unavailable — ignore
-      }
+      } catch { /* storage unavailable */ }
       this.saveTimer = null;
     }, 500);
   }

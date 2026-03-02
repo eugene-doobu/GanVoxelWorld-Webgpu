@@ -192,7 +192,7 @@ main() 호출
   │     └─ pipeline.setWeatherSystem(weatherSystem)
   ├─ 8. TextureAtlas 생성 → pipeline에 등록
   │
-  ├─ 9. FlyCamera 생성 (시작 위치: 청크 중앙, 높이 75%)
+  ├─ 9. FlyCamera 생성 (시작 위치: 청크 중앙, Y=72)
   ├─ 10. ChunkManager 생성 (seed=0)
   ├─ 11. HUD 생성
   │
@@ -240,10 +240,10 @@ async function main() {
   const atlas = new TextureAtlas(ctx);
   pipeline.setAtlasTexture(atlas.texture, atlas.materialTexture, atlas.normalTexture);
 
-  // 카메라 초기 위치: 청크(0,0)의 중앙, 높이 = CHUNK_HEIGHT * 0.75
+  // 카메라 초기 위치: 청크(0,0)의 중앙, Y=72 (지면 근처)
   const startX = 0 * CHUNK_WIDTH + CHUNK_WIDTH / 2;  // = 8
   const startZ = 0 * CHUNK_WIDTH + CHUNK_WIDTH / 2;  // = 8
-  const camera = new FlyCamera(canvas, vec3.fromValues(startX, CHUNK_HEIGHT * 0.75, startZ));
+  const camera = new FlyCamera(canvas, vec3.fromValues(startX, 72, startZ));
 
   let chunkManager = new ChunkManager(ctx, seed);
   const hud = new HUD();
@@ -497,7 +497,7 @@ export interface AppConfig {
 | 경로 | 기본값 | 범위 | 의미 |
 |------|--------|------|------|
 | `rendering.general.renderDistance` | 10 | 1-32 | 청크 렌더 거리 (반지름, 단위: 청크) |
-| `rendering.general.chunksPerFrame` | 2 | 1-10 | 프레임당 메싱 처리할 청크 수 |
+| `rendering.general.timeBudgetMs` | 12 | 1-100 | 프레임당 메싱에 할당할 시간 예산 (ms). 이 시간 안에 처리 가능한 만큼 청크를 메싱한다. |
 
 #### rendering.shadows (Cascaded Shadow Map)
 
@@ -520,8 +520,8 @@ export interface AppConfig {
 | 경로 | 기본값 | 범위 | 의미 |
 |------|--------|------|------|
 | `rendering.bloom.mipLevels` | 5 | 1-10 | 다운샘플 단계 수 |
-| `rendering.bloom.threshold` | 1.0 | 0-10 | HDR 밝기 임계값 |
-| `rendering.bloom.intensity` | 0.3 | 0-5 | 블룸 강도 |
+| `rendering.bloom.threshold` | 1.5 | 0-10 | HDR 밝기 임계값 |
+| `rendering.bloom.intensity` | 0.08 | 0-5 | 블룸 강도 |
 
 #### rendering.fog (안개)
 
@@ -552,9 +552,9 @@ export interface AppConfig {
 |------|--------|------|------|
 | `rendering.autoExposure.enabled` | true | - | 활성화 여부 |
 | `rendering.autoExposure.adaptSpeed` | 1.5 | 0.01-10 | 노출 적응 속도 (초당) |
-| `rendering.autoExposure.keyValue` | 0.18 | 0.01-1 | 목표 key value (18% 회색) |
-| `rendering.autoExposure.minExposure` | 0.1 | 0.001-10 | 최소 노출 값 |
-| `rendering.autoExposure.maxExposure` | 5.0 | 0.01-100 | 최대 노출 값 |
+| `rendering.autoExposure.keyValue` | 0.10 | 0.01-1 | 목표 key value |
+| `rendering.autoExposure.minExposure` | 0.2 | 0.001-10 | 최소 노출 값 |
+| `rendering.autoExposure.maxExposure` | 1.8 | 0.01-100 | 최대 노출 값 |
 
 #### rendering.postProcess (후처리 효과)
 
@@ -606,12 +606,15 @@ export interface AppConfig {
 | 경로 | 기본값 | 범위 | 의미 |
 |------|--------|------|------|
 | `environment.dayDurationSeconds` | 1200 | 10-36000 | 하루 주기 (초). 1200 = 20분 |
-| `environment.cloudCoverage` | 0.35 | 0-1 | 구름 커버리지 (legacy) |
-| `environment.cloud.coverage` | 0.35 | 0-1 | 구름 커버리지 |
-| `environment.cloud.baseNoiseScale` | 0.0018 | 0.0001-0.1 | 구름 노이즈 스케일 |
-| `environment.cloud.extinction` | 0.3 | 0.01-5 | 구름 소멸 계수 |
-| `environment.cloud.multiScatterFloor` | 0.35 | 0-1 | 다중 산란 최소값 |
-| `environment.cloud.detailStrength` | 0.15 | 0-1 | 디테일 노이즈 강도 |
+| `environment.cloud.enabled` | true | - | 볼류메트릭 구름 활성화 |
+| `environment.cloud.coverage` | 0.15 | 0-1 | 구름 커버리지 |
+| `environment.cloud.density` | 0.5 | 0-5 | 구름 밀도 |
+| `environment.cloud.cloudBase` | 300 | 0-2000 | 구름 층 하단 높이 (Y 좌표) |
+| `environment.cloud.cloudHeight` | 200 | 10-2000 | 구름 층 두께 |
+| `environment.cloud.detailStrength` | 0.3 | 0-1 | Worley 디테일 침식 강도 |
+| `environment.cloud.windSpeed` | 10 | 0-100 | 구름 이동 속도 |
+| `environment.cloud.silverLining` | 1.5 | 0-5 | 역광 실버 라이닝 강도 |
+| `environment.cloud.multiScatterFloor` | 0.15 | 0-1 | 다중 산란 최소값 |
 
 ### 3.4 get()/set() 동작 방식
 
@@ -922,7 +925,7 @@ index.html
     │  FlyCamera  │ │ ChunkManager │           │  DeferredPipeline │
     │             │ │              │           │                  │
     │ .speed      │ │ .renderDist  │           │ bloom params     │
-    │ .fov        │ │ .chunksPerFr │           │ ssao params      │
+    │ .fov        │ │ .timeBudgetMs│           │ ssao params      │
     │ .sensitivity│ │              │           │ shadow params    │
     └──────┬──────┘ └──────┬───────┘           └────────┬─────────┘
            │               │                            │
@@ -996,7 +999,7 @@ index.html
 | OreGenerator | `terrain.ores.*` | 생성자 |
 | TreeGenerator | `terrain.trees.*` | 생성자 |
 | WaterSimulator | `terrain.height.seaLevel` | 생성자 |
-| ChunkManager | `rendering.general.renderDistance`, `chunksPerFrame` | onChange + 매 프레임 |
+| ChunkManager | `rendering.general.renderDistance`, `timeBudgetMs` | onChange + 매 프레임 |
 | FlyCamera | `camera.*` | 매 프레임 `update(dt)` |
 | DeferredPipeline/PostProcess | `rendering.bloom.*`, `rendering.autoExposure.*` | `updateBloomParams()` 호출 시 |
 | ShadowMap | `rendering.shadows.*` | 렌더 시 |

@@ -7,7 +7,6 @@ export class FlyCamera {
   pitch = -0.3;
 
   private keys = new Set<string>();
-  private speed = Config.data.camera.speed;
   private rightMouseDown = false;
   private canvas: HTMLCanvasElement;
 
@@ -55,8 +54,10 @@ export class FlyCamera {
     };
     this.onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      this.speed *= e.deltaY < 0 ? 1.2 : 1 / 1.2;
-      this.speed = Math.max(1, Math.min(200, this.speed));
+      let spd = Config.data.camera.speed;
+      spd *= e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      spd = Math.max(1, Math.min(200, spd));
+      Config.set('camera.speed', spd);
     };
 
     document.addEventListener('keydown', this.onKeyDown);
@@ -93,7 +94,7 @@ export class FlyCamera {
 
     const move = vec3.create();
     const isShift = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-    const spd = (isShift ? Config.data.camera.fastSpeed : this.speed) * dt;
+    const spd = (isShift ? Config.data.camera.fastSpeed : Config.data.camera.speed) * dt;
 
     if (this.keys.has('KeyW')) vec3.scaleAndAdd(move, move, forward, spd);
     if (this.keys.has('KeyS')) vec3.scaleAndAdd(move, move, forward, -spd);
@@ -127,7 +128,7 @@ export class FlyCamera {
   }
 
   getSpeed(): number {
-    return this.speed;
+    return Config.data.camera.speed;
   }
 }
 

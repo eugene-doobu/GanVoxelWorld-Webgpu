@@ -1030,18 +1030,19 @@ this.loadQueue.sort((a, b) => {
 
 원형 범위 검사 `dx*dx + dz*dz > rd*rd`로 정사각형이 아닌 원형 영역을 로딩한다.
 
-### 11.3 chunksPerFrame 제한
+### 11.3 timeBudgetMs 시간 예산
 
 ```typescript
-const chunksPerFrame = Config.data.rendering.general.chunksPerFrame; // 기본: 2
+const timeBudgetMs = Config.data.rendering.general.timeBudgetMs; // 기본: 12ms
+const startTime = performance.now();
 
-while (this.loadQueue.length > 0 && processed < chunksPerFrame) {
+while (this.loadQueue.length > 0) {
+  if (performance.now() - startTime > timeBudgetMs) break;
   // 청크 1개 생성 + 메시 빌드
-  processed++;
 }
 ```
 
-프레임당 최대 2개 청크만 처리하여 프레임 드랍을 방지한다.
+프레임당 `timeBudgetMs`(기본 12ms) 시간 예산 내에서 처리 가능한 만큼 청크를 메싱한다. 고성능 장치에서는 더 많은 청크를, 저성능 장치에서는 더 적게 처리하여 프레임 드랍을 방지한다.
 
 ### 11.4 생성 파이프라인
 
@@ -1414,7 +1415,7 @@ ChunkManager.update(cameraPos, viewProj)
 │
 ├─ 1. 카메라 주변 청크 큐 등록 (원형 범위)
 ├─ 2. 거리순 정렬
-├─ 3. chunksPerFrame(2)개 처리:
+├─ 3. timeBudgetMs(12ms) 예산 내 청크 처리:
 │     │
 │     ├─ TerrainGenerator.generate()    ← 기본 지형 + 바이옴
 │     ├─ OreGenerator.generate()        ← 광석 맥

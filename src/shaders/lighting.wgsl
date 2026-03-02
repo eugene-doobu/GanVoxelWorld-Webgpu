@@ -42,7 +42,9 @@ struct PointLightBuffer {
 @group(3) @binding(0) var<storage, read> pointLights: PointLightBuffer;
 
 // ====================== Constants ======================
-const PI: f32 = 3.14159265359;
+#include "common/constants.wgsl"
+
+const SHADOW_LIGHT_SIZE: f32 = 3.0;
 
 // ====================== Atmospheric Scattering (Fog) ======================
 #include "common/phase_functions.wgsl"
@@ -129,8 +131,8 @@ fn sampleShadow(worldPos: vec3<f32>, viewDist: f32) -> f32 {
 
   // PCSS (Percentage Closer Soft Shadows)
   let texelSize = 1.0 / 2048.0;
-  // TODO: connect lightSize to Config.data.rendering.shadows.pcss.lightSize
-  let lightSize = 3.0; // light source size in texels
+  // TODO: expose via SceneUniforms when Config integration is ready
+  let lightSize = SHADOW_LIGHT_SIZE;
   let bias = 0.002;
 
   // Poisson disk samples (16 points)
@@ -315,7 +317,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let HdotV = max(dot(H, V), 0.0);
 
   // Metallic workflow: F0
-  let F0 = mix(vec3<f32>(0.04), albedo, metallic);
+  let F0 = mix(vec3<f32>(F0_DIELECTRIC), albedo, metallic);
 
   // Cook-Torrance Specular BRDF
   let D = distributionGGX(NdotH, roughness);

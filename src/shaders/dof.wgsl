@@ -26,7 +26,7 @@ fn linearizeDepth(d: f32) -> f32 {
 
 // Signed CoC: negative = foreground (near), positive = background (far)
 fn calcSignedCoC(linearDepth: f32) -> f32 {
-  return (linearDepth - params.focusDistance) * params.aperture / linearDepth;
+  return (linearDepth - params.focusDistance) * params.aperture / max(linearDepth, 0.001);
 }
 
 @fragment
@@ -58,7 +58,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let centerIsNear = signedCoC < 0.0;
 
-  // 32-sample Fibonacci spiral disc sampling
+  // Vogel disk: golden angle spiral gives near-uniform disc distribution without grid artifacts
   let goldenAngle = 2.39996323;
   let numSamples = 32;
 
@@ -70,8 +70,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   for (var i = 0; i < numSamples; i++) {
     // Uniform disc distribution via square-root spacing
     let fi = f32(i);
-    let fn = f32(numSamples);
-    let r = sqrt((fi + 0.5) / fn);
+    let fn_count = f32(numSamples);
+    let r = sqrt((fi + 0.5) / fn_count);
     let theta = fi * goldenAngle;
     let unitOffset = vec2f(cos(theta), sin(theta)) * r;
 

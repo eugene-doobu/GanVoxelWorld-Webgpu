@@ -17,6 +17,9 @@ export function buildRenderingTab(): InspectorTab {
   const shadows = tab.addSection('Shadows', true);
   shadows.addField({ type: 'number', label: 'Cascade Count', configPath: 'rendering.shadows.cascadeCount', min: 1, max: 4, step: 1 });
   shadows.addField({ type: 'number', label: 'Map Size', configPath: 'rendering.shadows.mapSize', min: 512, max: 4096, step: 512 });
+  shadows.addField({ type: 'slider', label: 'Split 1', configPath: 'rendering.shadows.cascadeSplits.0', min: 5, max: 100, step: 5 });
+  shadows.addField({ type: 'slider', label: 'Split 2', configPath: 'rendering.shadows.cascadeSplits.1', min: 20, max: 200, step: 5 });
+  shadows.addField({ type: 'slider', label: 'Split 3', configPath: 'rendering.shadows.cascadeSplits.2', min: 50, max: 500, step: 10 });
 
   // SSAO
   const ssao = tab.addSection('SSAO', true);

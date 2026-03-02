@@ -4,10 +4,10 @@
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
 @group(0) @binding(1) var gDepth: texture_depth_2d;
+@group(0) @binding(2) var cloudTexture: texture_2d<f32>;
+@group(0) @binding(3) var cloudSampler: sampler;
 
-const PI: f32 = 3.14159265359;
-const AURORA_SPEED: f32 = 0.03;
-
+#include "common/constants.wgsl"
 #include "common/fullscreen_vert.wgsl"
 #include "common/phase_functions.wgsl"
 #include "common/sky_hash.wgsl"
@@ -16,8 +16,6 @@ const AURORA_SPEED: f32 = 0.03;
 #include "common/nebula.wgsl"
 #include "common/moon.wgsl"
 #include "common/meteor.wgsl"
-#include "common/aurora.wgsl"
-#include "common/clouds.wgsl"
 
 // Night sky gradient (zenith to horizon)
 fn nightSkyGradient(up: f32) -> vec3<f32> {
@@ -90,12 +88,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Dim day sky toward night
   skyColor *= dayFactor;
 
-  // === Voxel Sun (square) ===
+  // === Sun disc ===
   let sunRight = normalize(cross(lightDir, vec3<f32>(0.0, 1.0, 0.001)));
   let sunUp = normalize(cross(sunRight, lightDir));
   let sunLocalX = dot(rayDir - lightDir * cosTheta, sunRight);
   let sunLocalY = dot(rayDir - lightDir * cosTheta, sunUp);
-  let sunDist = max(abs(sunLocalX), abs(sunLocalY));
+  let sunDist = length(vec2<f32>(sunLocalX, sunLocalY));
   let sunSize = 0.038;
 
   if (sunDist < sunSize && cosTheta > 0.9 && dayFactor > 0.01) {
@@ -113,20 +111,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     skyColor += glowColor * glowStr;
   }
 
-  // === Volumetric clouds ===
-  let elapsedTime = scene.lightDir.w;
-  let cloud = raymarchClouds(scene.cameraPos.xyz, rayDir, lightDir, scene.sunColor.xyz, elapsedTime, dayFactor);
-  skyColor = mix(skyColor, cloud.rgb, cloud.a);
-
-  // === SEUS-style night sky ===
+  // === Night sky ===
   if (nightFactor > 0.01) {
     let moonPhase = scene.skyNightParams.x;
     let moonBright = scene.skyNightParams.y;
     let starTime = scene.skyNightParams.z;
 
-    let cloudOcclusion = 1.0 - cloud.a;
-
-    // Moon disc mask (early computation so stars don't render over moon)
+    // Moon disc mask
     let moonDir = lightDir;
     let moonDot2 = dot(rayDir, moonDir);
     let moonRight = normalize(cross(moonDir, vec3<f32>(0.0, 1.0, 0.001)));
@@ -140,7 +131,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       moonEdge = smoothstep(moonSize, moonSize * 0.9, moonDist);
     }
     let moonOcclusion = 1.0 - moonEdge;
-    let bgOcclusion = cloudOcclusion * moonOcclusion;
 
     // Night sky gradient
     skyColor += nightSkyGradient(up) * nightFactor;
@@ -155,35 +145,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let starBrightness = skyPacked.x;
     let nebulaIntensity = skyPacked.y;
 
-    // Nebula / Milky Way
+    // Nebula / Milky Way (moonOcclusion only — cloud handled in final composite)
     if (up > 0.05 && nebulaIntensity > 0.001) {
       var nebulaColor = sampleNebula(rayDir, starTime);
       nebulaColor *= 1.0 - 0.3 * moonBright;
-      skyColor += nebulaColor * nightFactor * bgOcclusion * nebulaIntensity;
+      skyColor += nebulaColor * nightFactor * moonOcclusion * nebulaIntensity;
     }
 
-    // Stars
+    // Stars (moonOcclusion only)
     if (up > 0.0 && starBrightness > 0.001) {
       var starFieldColor = sampleStarField(rayDir, starTime);
       let horizFade = smoothstep(0.0, 0.15, up);
       starFieldColor *= horizFade;
       starFieldColor *= 1.0 - 0.4 * moonBright;
-      skyColor += starFieldColor * nightFactor * bgOcclusion * starBrightness;
+      skyColor += starFieldColor * nightFactor * moonOcclusion * starBrightness;
     }
 
-    // Meteors
+    // Meteors (moonOcclusion only)
     if (up > 0.05) {
-      skyColor += sampleMeteor(rayDir, starTime) * nightFactor * bgOcclusion;
-    }
-
-    // Aurora Borealis
-    if (up > 0.05) {
-      let aurora = sampleAurora(rayDir, scene.cameraPos.xyz, starTime);
-      if (aurora.a > 0.001) {
-        let auroraIntensity = nightFactor * (1.0 - 0.2 * moonBright);
-        let auroraColor = aurora.rgb * auroraIntensity;
-        skyColor += auroraColor * aurora.a * bgOcclusion;
-      }
+      skyColor += sampleMeteor(rayDir, starTime) * nightFactor * moonOcclusion;
     }
 
     // Moon disc
@@ -191,12 +171,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
       let normX = moonLocalX / moonSize;
       let normY = moonLocalY / moonSize;
       let moonColor = moonShading(normX, normY, moonPhase);
-      skyColor += moonColor * moonEdge * nightFactor * cloudOcclusion;
+      skyColor += moonColor * moonEdge * nightFactor;
     }
 
     // Moon glow
-    skyColor += moonGlow(moonDot2, moonBright) * nightFactor * cloudOcclusion;
+    skyColor += moonGlow(moonDot2, moonBright) * nightFactor;
   }
+
+  // === Cloud composite ===
+  // All sky elements (day gradient, sun, stars, moon, etc.) are behind clouds.
+  // Apply cloud transmittance to entire sky, then add cloud scattered light.
+  let cloudData = textureSampleLevel(cloudTexture, cloudSampler, input.uv, 0.0);
+  skyColor = skyColor * cloudData.a + cloudData.rgb;
 
   return vec4<f32>(skyColor, 1.0);
 }

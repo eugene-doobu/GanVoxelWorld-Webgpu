@@ -55,10 +55,10 @@ async function main() {
 
   let seed = 0;
 
-  // Camera starts at center of a chunk area at a comfortable height
+  // Camera starts near ground level at chunk center
   const startX = 0 * CHUNK_WIDTH + CHUNK_WIDTH / 2;
   const startZ = 0 * CHUNK_WIDTH + CHUNK_WIDTH / 2;
-  const camera = new FlyCamera(canvas, vec3.fromValues(startX, CHUNK_HEIGHT * 0.75, startZ));
+  const camera = new FlyCamera(canvas, vec3.fromValues(startX, 72, startZ));
 
   let chunkManager = new ChunkManager(ctx, seed);
 

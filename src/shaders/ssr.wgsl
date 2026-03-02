@@ -106,31 +106,35 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampleCoord = vec2<i32>(rayUV * screenSize);
     let sceneDepth = textureLoad(gDepth, sampleCoord, 0);
 
-    // Compare depths: ray went behind scene geometry
-    if (rayDepth > sceneDepth && sceneDepth > 0.0) {
-      // Check thickness: only count as hit if ray is close to surface
-      let hitWorldPos = reconstructWorldPos(rayUV, sceneDepth, ssr.invViewProjection);
-      let diff = distance(rayPos, hitWorldPos);
-      if (diff < THICKNESS * stepSize * f32(i + 1u) * 0.5 + THICKNESS) {
-        // Binary refinement for precision
-        var refinedPos = rayPos - reflectDir * stepSize;
-        var refinedStep = stepSize * 0.5;
+    // Compare in world-space distance (linear) to avoid NDC nonlinearity
+    if (sceneDepth > 0.0 && sceneDepth < 1.0) {
+      let sceneWorldPos = reconstructWorldPos(rayUV, sceneDepth, ssr.invViewProjection);
+      let linearRay = distance(ssr.cameraPos.xyz, rayPos);
+      let linearScene = distance(ssr.cameraPos.xyz, sceneWorldPos);
+      let diff = linearRay - linearScene;
+
+      if (diff > 0.0 && diff < THICKNESS * stepSize * f32(i + 1u) * 0.5 + THICKNESS) {
+        // Binary refinement (lo/hi bisection) for precision
+        var lo = rayPos - reflectDir * stepSize;
+        var hi = rayPos;
         for (var j = 0u; j < BINARY_STEPS; j++) {
-          refinedPos += reflectDir * refinedStep;
-          let refScreen = worldToScreen(refinedPos);
-          let refSampleCoord = vec2<i32>(refScreen.xy * screenSize);
+          let mid = (lo + hi) * 0.5;
+          let refScreen = worldToScreen(mid);
           if (refScreen.x < 0.0 || refScreen.x > 1.0 || refScreen.y < 0.0 || refScreen.y > 1.0) {
             break;
           }
+          let refSampleCoord = vec2<i32>(refScreen.xy * screenSize);
           let refSceneDepth = textureLoad(gDepth, refSampleCoord, 0);
-          if (refScreen.z > refSceneDepth) {
-            refinedPos -= reflectDir * refinedStep;
+          let refSceneWorld = reconstructWorldPos(refScreen.xy, refSceneDepth, ssr.invViewProjection);
+          if (distance(ssr.cameraPos.xyz, mid) > distance(ssr.cameraPos.xyz, refSceneWorld)) {
+            hi = mid;  // ray behind surface -> move backward
+          } else {
+            lo = mid;  // ray in front -> move forward
           }
-          refinedStep *= 0.5;
         }
 
         // Sample HDR color at refined hit point
-        let finalScreen = worldToScreen(refinedPos);
+        let finalScreen = worldToScreen((lo + hi) * 0.5);
         let finalUV = finalScreen.xy;
         if (finalUV.x >= 0.0 && finalUV.x <= 1.0 && finalUV.y >= 0.0 && finalUV.y <= 1.0) {
           let reflectedColor = textureSampleLevel(hdrInput, linearSampler, finalUV, 0.0).rgb;

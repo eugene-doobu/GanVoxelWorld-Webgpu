@@ -33,10 +33,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
   if (idx >= params.x) { return; }
 
-  let meta = chunkMetas[idx];
-  let aabbMin = meta.aabbMin.xyz;
-  let aabbMax = meta.aabbMax.xyz;
-  let indexCount = bitcast<u32>(meta.aabbMin.w);
+  let cm = chunkMetas[idx];
+  let aabbMin = cm.aabbMin.xyz;
+  let aabbMax = cm.aabbMax.xyz;
+  let indexCount = bitcast<u32>(cm.aabbMin.w);
 
   // Skip empty chunks
   if (indexCount == 0u) {
@@ -62,8 +62,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (visible) {
     indirectArgs[idx].indexCount = indexCount;
     indirectArgs[idx].instanceCount = 1u;
-    indirectArgs[idx].firstIndex = meta.offsets.x;
-    indirectArgs[idx].baseVertex = bitcast<i32>(meta.offsets.y);
+    indirectArgs[idx].firstIndex = cm.offsets.x;
+    indirectArgs[idx].baseVertex = bitcast<i32>(cm.offsets.y);
     indirectArgs[idx].firstInstance = 0u;
   } else {
     indirectArgs[idx].indexCount = 0u;

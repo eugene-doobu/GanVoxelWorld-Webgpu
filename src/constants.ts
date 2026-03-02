@@ -25,5 +25,8 @@ export const VELOCITY_FORMAT: GPUTextureFormat = 'rg16float';
 // Luminance (auto exposure)
 export const LUMINANCE_FORMAT: GPUTextureFormat = 'r16float';
 
+// Cloud (volumetric)
+export const CLOUD_FORMAT: GPUTextureFormat = 'rgba16float';
+
 // Point Lights (structural)
 export const MAX_POINT_LIGHTS = 128;

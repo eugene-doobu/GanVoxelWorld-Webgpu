@@ -123,6 +123,110 @@ export function createField(opts: FieldOptions): HTMLElement {
   return row;
 }
 
+// --- Custom (non-Config) field helpers ---
+
+export interface CustomSliderResult {
+  row: HTMLElement;
+  slider: HTMLInputElement;
+  display: HTMLSpanElement;
+}
+
+export function createCustomSlider(
+  labelText: string, value: number,
+  min: number, max: number, step: number,
+  onInput: (v: number) => void,
+): CustomSliderResult {
+  const row = document.createElement('div');
+  row.className = 'inspector-field';
+
+  const label = document.createElement('div');
+  label.className = 'inspector-field-label';
+  label.textContent = labelText;
+  row.appendChild(label);
+
+  const control = document.createElement('div');
+  control.className = 'inspector-field-control';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(min);
+  slider.max = String(max);
+  slider.step = String(step);
+  slider.value = String(value);
+
+  const display = document.createElement('span');
+  display.className = 'val-display';
+  display.textContent = formatVal(value, step);
+
+  slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value);
+    display.textContent = formatVal(v, step);
+    onInput(v);
+  });
+
+  control.appendChild(slider);
+  control.appendChild(display);
+  row.appendChild(control);
+  return { row, slider, display };
+}
+
+export function createCustomToggle(
+  labelText: string, checked: boolean,
+  onChange: (v: boolean) => void,
+): { row: HTMLElement; checkbox: HTMLInputElement } {
+  const row = document.createElement('div');
+  row.className = 'inspector-field';
+
+  const label = document.createElement('div');
+  label.className = 'inspector-field-label';
+  label.textContent = labelText;
+  row.appendChild(label);
+
+  const control = document.createElement('div');
+  control.className = 'inspector-field-control';
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = checked;
+  checkbox.addEventListener('change', () => onChange(checkbox.checked));
+
+  control.appendChild(checkbox);
+  row.appendChild(control);
+  return { row, checkbox };
+}
+
+export function createCustomDropdown(
+  labelText: string,
+  options: { label: string; value: number | string }[],
+  selected: number | string,
+  onChange: (v: string) => void,
+): { row: HTMLElement; select: HTMLSelectElement } {
+  const row = document.createElement('div');
+  row.className = 'inspector-field';
+
+  const label = document.createElement('div');
+  label.className = 'inspector-field-label';
+  label.textContent = labelText;
+  row.appendChild(label);
+
+  const control = document.createElement('div');
+  control.className = 'inspector-field-control';
+
+  const select = document.createElement('select');
+  for (const opt of options) {
+    const option = document.createElement('option');
+    option.value = String(opt.value);
+    option.textContent = opt.label;
+    if (String(opt.value) === String(selected)) option.selected = true;
+    select.appendChild(option);
+  }
+  select.addEventListener('change', () => onChange(select.value));
+
+  control.appendChild(select);
+  row.appendChild(control);
+  return { row, select };
+}
+
 function formatVal(v: number, step?: number): string {
   if (step != null && step < 1) {
     const decimals = Math.max(1, Math.ceil(-Math.log10(step)));

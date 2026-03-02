@@ -14,7 +14,7 @@ import { downsample, buildLODMesh, LODNeighborBlocks } from '../meshing/LODGener
 import { CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH, MAX_POINT_LIGHTS } from '../constants';
 import { Config } from '../config/Config';
 import { getBlockData, isBlockTorch, TorchFacing } from './BlockTypes';
-import { IndirectRenderer } from '../renderer/IndirectRenderer';
+import { IndirectRenderer, ChunkAllocation } from '../renderer/IndirectRenderer';
 
 const enum ChunkState {
   QUEUED,
@@ -94,7 +94,7 @@ export class ChunkManager {
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
     this.villageGen = new VillageGenerator(seed, this.terrainGen);
     this.vegGen = new VegetationGenerator(seed, this.terrainGen);
-    this.waterSim = new WaterSimulator();
+    this.waterSim = new WaterSimulator(seed);
     this.indirectRenderer = new IndirectRenderer(ctx.device);
     this.vegIndirectRenderer = new IndirectRenderer(ctx.device);
     this.lodIndirectRenderer = new IndirectRenderer(ctx.device, 32 * 1024 * 1024, 16 * 1024 * 1024, 2048);
@@ -148,7 +148,7 @@ export class ChunkManager {
     this.treeGen = new TreeGenerator(seed, this.terrainGen);
     this.villageGen = new VillageGenerator(seed, this.terrainGen);
     this.vegGen = new VegetationGenerator(seed, this.terrainGen);
-    this.waterSim = new WaterSimulator();
+    this.waterSim = new WaterSimulator(seed);
   }
 
   update(cameraPos: vec3, viewProj: Float32Array): void {
@@ -287,20 +287,29 @@ export class ChunkManager {
     this.updateLOD(camChunkX, camChunkZ);
   }
 
-  private uploadSolidMesh(chunk: Chunk, meshData: MeshData): void {
-    // Free previous allocation
-    if (chunk.solidAlloc) {
-      this.indirectRenderer.freeChunk(chunk.solidAlloc);
-      chunk.solidAlloc = null;
+  /** Free old allocation, upload new mesh, return new allocation (or null if empty). */
+  private reuploadMesh(
+    renderer: IndirectRenderer,
+    oldAlloc: ChunkAllocation | null,
+    vertices: Float32Array,
+    indices: Uint32Array,
+    indexCount: number,
+    worldX: number,
+    worldZ: number,
+  ): ChunkAllocation | null {
+    if (oldAlloc) renderer.freeChunk(oldAlloc);
+    if (indexCount > 0) {
+      return renderer.uploadChunk(vertices, indices, worldX, worldZ);
     }
+    return null;
+  }
 
-    if (meshData.indexCount > 0) {
-      const alloc = this.indirectRenderer.uploadChunk(
-        meshData.vertices, meshData.indices,
-        chunk.worldOffsetX, chunk.worldOffsetZ,
-      );
-      chunk.solidAlloc = alloc;
-    }
+  private uploadSolidMesh(chunk: Chunk, meshData: MeshData): void {
+    chunk.solidAlloc = this.reuploadMesh(
+      this.indirectRenderer, chunk.solidAlloc,
+      meshData.vertices, meshData.indices, meshData.indexCount,
+      chunk.worldOffsetX, chunk.worldOffsetZ,
+    );
   }
 
   private rebuildNeighborIfReady(cx: number, cz: number): void {
@@ -383,19 +392,11 @@ export class ChunkManager {
   }
 
   private uploadVegetationMesh(chunk: Chunk, meshData: MeshData): void {
-    // Free previous mega alloc
-    if (chunk.vegMegaAlloc) {
-      this.vegIndirectRenderer.freeChunk(chunk.vegMegaAlloc);
-      chunk.vegMegaAlloc = null;
-    }
-
-    if (meshData.vegIndexCount > 0) {
-      const alloc = this.vegIndirectRenderer.uploadChunk(
-        meshData.vegVertices, meshData.vegIndices,
-        chunk.worldOffsetX, chunk.worldOffsetZ,
-      );
-      chunk.vegMegaAlloc = alloc;
-    }
+    chunk.vegMegaAlloc = this.reuploadMesh(
+      this.vegIndirectRenderer, chunk.vegMegaAlloc,
+      meshData.vegVertices, meshData.vegIndices, meshData.vegIndexCount,
+      chunk.worldOffsetX, chunk.worldOffsetZ,
+    );
   }
 
   getVegetationDrawCalls(): ChunkDrawCall[] {
@@ -702,16 +703,11 @@ export class ChunkManager {
       );
 
       // Upload to LOD mega buffer
-      if (entry.chunk.lodAlloc) {
-        this.lodIndirectRenderer.freeChunk(entry.chunk.lodAlloc);
-        entry.chunk.lodAlloc = null;
-      }
-      if (lodMeshData.indexCount > 0) {
-        entry.chunk.lodAlloc = this.lodIndirectRenderer.uploadChunk(
-          lodMeshData.vertices, lodMeshData.indices,
-          entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
-        );
-      }
+      entry.chunk.lodAlloc = this.reuploadMesh(
+        this.lodIndirectRenderer, entry.chunk.lodAlloc,
+        lodMeshData.vertices, lodMeshData.indices, lodMeshData.indexCount,
+        entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
+      );
 
       // Compress block data
       entry.chunk.compress();
@@ -810,16 +806,11 @@ export class ChunkManager {
       lodNeighbors,
     );
 
-    if (entry.chunk.lodAlloc) {
-      this.lodIndirectRenderer.freeChunk(entry.chunk.lodAlloc);
-      entry.chunk.lodAlloc = null;
-    }
-    if (lodMeshData.indexCount > 0) {
-      entry.chunk.lodAlloc = this.lodIndirectRenderer.uploadChunk(
-        lodMeshData.vertices, lodMeshData.indices,
-        entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
-      );
-    }
+    entry.chunk.lodAlloc = this.reuploadMesh(
+      this.lodIndirectRenderer, entry.chunk.lodAlloc,
+      lodMeshData.vertices, lodMeshData.indices, lodMeshData.indexCount,
+      entry.chunk.worldOffsetX, entry.chunk.worldOffsetZ,
+    );
   }
 
   getLODDrawCalls(): ChunkDrawCall[] {

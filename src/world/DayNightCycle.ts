@@ -3,11 +3,12 @@ import { Config } from '../config/Config';
 
 export class DayNightCycle {
   // Time of day: 0.0 = midnight, 0.25 = 06:00, 0.5 = noon, 0.75 = 18:00
-  timeOfDay = 0.0; // Start at midnight
+  timeOfDay = 0.3; // Start at ~07:12 (morning)
   paused = false;
 
-  sunDir = vec3.fromValues(0, 1, 0);
-  moonDir = vec3.fromValues(0, -1, 0);
+  // gl-matrix vec3.fromValues() returns Float32Array at runtime
+  sunDir = vec3.fromValues(0, 1, 0) as unknown as Float32Array;
+  moonDir = vec3.fromValues(0, -1, 0) as unknown as Float32Array;
   sunColor = new Float32Array([1.0, 0.95, 0.85]);
   sunIntensity = 3.0;
   ambientColor = new Float32Array([0.10, 0.13, 0.18]);
@@ -17,7 +18,6 @@ export class DayNightCycle {
   moonPhase = 0.5;        // 0.0=new moon, 0.5=full moon
   moonBrightness = 1.0;   // derived from moonPhase: 0→1
   private dayCount = 4;   // elapsed days (start at 4 → moonPhase=0.5=full moon)
-  private prevTimeOfDay = 0.0;
 
   update(dt: number): void {
     if (!this.paused) {
@@ -28,7 +28,6 @@ export class DayNightCycle {
       if (prev > 0.9 && this.timeOfDay < 0.1) {
         this.dayCount++;
       }
-      this.prevTimeOfDay = this.timeOfDay;
     }
     this.updateMoonPhase();
     this.updateSunPosition();
@@ -38,7 +37,6 @@ export class DayNightCycle {
   setTime(t: number): void {
     this.dayCount = Math.floor(t);
     this.timeOfDay = t - this.dayCount;
-    this.prevTimeOfDay = this.timeOfDay;
     this.paused = true;
     this.updateMoonPhase();
     this.updateSunPosition();
@@ -121,9 +119,7 @@ export class DayNightCycle {
 
   /** lightDir: sunDir during day, moonDir at night (with smooth transition). */
   get lightDir(): Float32Array {
-    return this.sunDir[1] > -0.1
-      ? this.sunDir as unknown as Float32Array
-      : this.moonDir as unknown as Float32Array;
+    return this.sunDir[1] > -0.1 ? this.sunDir : this.moonDir;
   }
 
   // Returns hour in 0-24 format for HUD display

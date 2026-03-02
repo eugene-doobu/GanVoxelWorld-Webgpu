@@ -40,6 +40,12 @@ export function buildTerrainTab(onRegenerate: (seed: number) => void): TerrainTa
   caves.addField({ type: 'slider', label: 'Min Y', configPath: 'terrain.caves.minY', min: 1, max: 50, step: 1 });
   caves.addField({ type: 'slider', label: 'Max Y', configPath: 'terrain.caves.maxY', min: 20, max: 100, step: 1 });
 
+  // Water Table section
+  const waterTable = tab.addSection('Water Table', true);
+  waterTable.addField({ type: 'slider', label: 'Base Level', configPath: 'terrain.caves.waterTable.baseLevel', min: 0, max: 60, step: 1 });
+  waterTable.addField({ type: 'slider', label: 'Amplitude', configPath: 'terrain.caves.waterTable.amplitude', min: 0, max: 30, step: 1 });
+  waterTable.addField({ type: 'slider', label: 'Noise Scale', configPath: 'terrain.caves.waterTable.noiseScale', min: 10, max: 300, step: 5 });
+
   // Ores section
   const ores = tab.addSection('Ores', true);
   const oreTypes = ['coal', 'iron', 'gold', 'diamond'] as const;

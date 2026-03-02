@@ -1,8 +1,27 @@
 {
-  "name": "ar1-webgpu",
-  "private": true,
+  "name": "gan-voxel-world-webgpu",
   "version": "1.0.0",
+  "description": "WebGPU-powered voxel terrain rendering engine with deferred shading",
   "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "webgpu",
+    "voxel",
+    "terrain",
+    "rendering",
+    "deferred-rendering",
+    "wgsl",
+    "typescript",
+    "vite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eugene-doobu/GanVoxelWorld-Webgpu.git"
+  },
+  "homepage": "https://github.com/eugene-doobu/GanVoxelWorld-Webgpu",
+  "bugs": {
+    "url": "https://github.com/eugene-doobu/GanVoxelWorld-Webgpu/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

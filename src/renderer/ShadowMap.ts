@@ -269,19 +269,21 @@ export class ShadowMap {
     const lightProj = mat4.create();
     orthoZO(lightProj, -halfSize, halfSize, -halfSize, halfSize, 0.1, splitDist * 5);
 
-    // Texel snapping: prevent shadow swimming when camera moves sub-texel amounts
-    // Compute preliminary lightViewProj
+    // Texel snapping: prevent shadow swimming when camera moves sub-texel amounts.
+    // The snapping rounds the projection-space origin to the nearest shadow texel,
+    // which stabilizes the shadow map against camera translation. This does NOT
+    // prevent shimmer from light direction changes (rotating sun), which causes
+    // unavoidable shadow map rotation and retexelization.
     const lvp = this.lightViewProjs[index];
     mat4.multiply(lvp, lightProj, lightView);
 
-    // Transform world origin to shadow clip space
-    const ox = lvp[0] * 0 + lvp[4] * 0 + lvp[8] * 0 + lvp[12];
-    const oy = lvp[1] * 0 + lvp[5] * 0 + lvp[9] * 0 + lvp[13];
-    // Scale to texel coordinates
+    // Transform world origin to shadow clip space (only need translation column)
+    const ox = lvp[12];
+    const oy = lvp[13];
+    // Scale to texel coordinates and snap
     const halfMapSize = mapSize / 2;
     const txX = ox * halfMapSize;
     const txY = oy * halfMapSize;
-    // Compute rounding offset
     const offsetX = (Math.round(txX) - txX) / halfMapSize;
     const offsetY = (Math.round(txY) - txY) / halfMapSize;
 

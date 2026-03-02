@@ -88,11 +88,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let nightExposureBoost = mix(1.0, 1.4, nightFactor);
   color *= exposure * nightExposureBoost;
 
+  // Color grade in linear space before tonemapping for physically correct color science
+  color = colorGrade(color, params.timeOfDay);
+
   // ACES tone mapping
   color = acesFilm(color);
-
-  // Color grading (after tonemapping, before gamma)
-  color = colorGrade(color, params.timeOfDay);
 
   // Gamma correction (linear → sRGB)
   color = pow(color, vec3<f32>(1.0 / 2.2));

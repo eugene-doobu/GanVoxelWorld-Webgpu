@@ -1065,8 +1065,8 @@ export function buildRenderingTab(): InspectorTab {
   const general = tab.addSection('General');
   general.addField({ type: 'slider', label: 'Render Dist',
     configPath: 'rendering.general.renderDistance', min: 2, max: 24, step: 1 });
-  general.addField({ type: 'slider', label: 'Chunks/Frame',
-    configPath: 'rendering.general.chunksPerFrame', min: 1, max: 8, step: 1 });
+  general.addField({ type: 'slider', label: 'Time Budget (ms)',
+    configPath: 'rendering.general.timeBudgetMs', min: 1, max: 100, step: 1 });
 
   // Shadows, SSAO, Bloom, Fog, Contact Shadows, TAA,
   // Auto Exposure, PCSS, Post Process, Motion Blur, DoF
@@ -1078,7 +1078,7 @@ export function buildRenderingTab(): InspectorTab {
 
 | 섹션 | 필드 수 | 주요 파라미터 |
 |------|---------|--------------|
-| General | 2 | renderDistance, chunksPerFrame |
+| General | 2 | renderDistance, timeBudgetMs |
 | Shadows | 2 | cascadeCount, mapSize |
 | SSAO | 3 | radius, bias, kernelSize |
 | Bloom | 3 | threshold, intensity, mipLevels |
@@ -1157,16 +1157,7 @@ timeSlider.addEventListener('dblclick', () => {
 
 **Day Duration**: Config 경유 (`environment.dayDurationSeconds`), 60~3600초 범위.
 
-**Cloud 섹션**: 5개 Config 필드 (coverage, baseNoiseScale, extinction, multiScatterFloor, detailStrength).
-
-```typescript
-// cloud.coverage → cloudCoverage 동기화 (legacy uniform 경로 호환)
-Config.onChange((path) => {
-  if (path === 'environment.cloud.coverage') {
-    Config.data.environment.cloudCoverage = Config.data.environment.cloud.coverage;
-  }
-});
-```
+**Cloud 섹션**: 9개 Config 필드 (enabled, coverage, density, cloudBase, cloudHeight, detailStrength, windSpeed, silverLining, multiScatterFloor). VolumetricClouds.ts 가 `Config.data.environment.cloud.*` 를 직접 읽어 CloudUniforms 버퍼에 기록한다.
 
 **Weather 섹션**: 직접 제어 (Config 경유하지 않음)
 
@@ -1388,11 +1379,9 @@ WeatherSystem                    DeferredPipeline.updateCamera()
   .getFogDensityMultiplier() →   main.ts에서 fogStart/fogEnd 계산에 적용
 
 Config.data.environment.cloud
-  .baseNoiseScale  ─────────→    sceneF32[36]      → cloudParams.x
-  .extinction      ─────────→    sceneF32[37]      → cloudParams.y
-  .multiScatterFloor ───────→    sceneF32[38]      → cloudParams.z
-  .detailStrength  ─────────→    sceneF32[39]      → cloudParams.w
-  .coverage (→cloudCoverage) →   sceneF32[35]      → fogParams.w
+  → VolumetricClouds.ts 의 CloudUniforms 버퍼에 직접 기록 (sceneUniforms와 분리)
+  sceneF32[35] = 0  (fogParams.w, 미사용)
+  sceneF32[36..39] = 0  (cloudParams, reserved/zeroed)
 ```
 
 ### 8.6 Uniform Buffer 레이아웃
@@ -1406,8 +1395,8 @@ Byte    Offset   Float32Index   내용
 80-95   80       [20..23]       lightDir (vec3) + elapsedTime (f32)
 96-111  96       [24..27]       sunColor (vec3) + sunIntensity (f32)
 112-127 112      [28..31]       ambientColor (vec3) + ambientGroundFactor (f32)
-128-143 128      [32..35]       fogStart, fogEnd, timeOfDay, cloudCoverage
-144-159 144      [36..39]       cloudParams (baseNoiseScale, extinction, msFloor, detail)
+128-143 128      [32..35]       fogStart, fogEnd, skyPackedParams, 0 (reserved)
+144-159 144      [36..39]       cloudParams (reserved, zeroed — 구름은 별도 CloudUniforms)
 160-223 160      [40..55]       viewProj (mat4x4, unjittered)
 224-239 224      [56..59]       contactShadowParams (enabled, maxSteps, rayLength, thickness)
 240-255 240      [60..63]       skyNightParams (moonPhase, moonBrightness, elapsedTime, reserved)

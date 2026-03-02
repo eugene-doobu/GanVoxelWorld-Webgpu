@@ -1,4 +1,5 @@
 import { InspectorTab } from './InspectorTab';
+import { createCustomSlider, createCustomToggle, createCustomDropdown } from './InspectorField';
 import { DayNightCycle } from '../../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../../world/WeatherSystem';
 
@@ -18,37 +19,12 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   const dayNight = tab.addSection('Day / Night');
 
   // Time slider (direct control, not via Config)
-  const timeRow = document.createElement('div');
-  timeRow.className = 'inspector-field';
-  const timeLabel = document.createElement('div');
-  timeLabel.className = 'inspector-field-label';
-  timeLabel.textContent = 'Time';
-  const timeControl = document.createElement('div');
-  timeControl.className = 'inspector-field-control';
-  const timeSlider = document.createElement('input');
-  timeSlider.type = 'range';
-  timeSlider.min = '0';
-  timeSlider.max = '100';
-  timeSlider.step = '1';
-  timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
-  const timeVal = document.createElement('span');
-  timeVal.className = 'val-display';
-  timeVal.textContent = dayNightCycle.getTimeString();
-
-  timeSlider.addEventListener('input', () => {
-    const t = parseInt(timeSlider.value) / 100;
-    dayNightCycle.setTime(t);
-    timeVal.textContent = dayNightCycle.getTimeString();
+  const time = createCustomSlider('Time', Math.round(dayNightCycle.timeOfDay * 100), 0, 100, 1, (v) => {
+    dayNightCycle.setTime(v / 100);
+    time.display.textContent = dayNightCycle.getTimeString();
   });
-  timeSlider.addEventListener('dblclick', () => {
-    dayNightCycle.paused = false;
-  });
-
-  timeControl.appendChild(timeSlider);
-  timeControl.appendChild(timeVal);
-  timeRow.appendChild(timeLabel);
-  timeRow.appendChild(timeControl);
-  dayNight.addElement(timeRow);
+  time.slider.addEventListener('dblclick', () => { dayNightCycle.paused = false; });
+  dayNight.addElement(time.row);
 
   dayNight.addField({ type: 'slider', label: 'Day Duration', configPath: 'environment.dayDurationSeconds', min: 60, max: 3600, step: 60 });
 
@@ -57,77 +33,38 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
   sky.addField({ type: 'slider', label: 'Star Brightness', configPath: 'environment.sky.starBrightness', min: 0, max: 2, step: 0.05 });
   sky.addField({ type: 'slider', label: 'Nebula Intensity', configPath: 'environment.sky.nebulaIntensity', min: 0, max: 2, step: 0.05 });
 
-  // Cloud section
+  // Clouds section
   const clouds = tab.addSection('Clouds');
+  clouds.addField({ type: 'toggle', label: 'Enabled', configPath: 'environment.cloud.enabled' });
   clouds.addField({ type: 'slider', label: 'Coverage', configPath: 'environment.cloud.coverage', min: 0, max: 1, step: 0.05 });
-  clouds.addField({ type: 'slider', label: 'Noise Scale', configPath: 'environment.cloud.baseNoiseScale', min: 0.0005, max: 0.005, step: 0.0001 });
-  clouds.addField({ type: 'slider', label: 'Extinction', configPath: 'environment.cloud.extinction', min: 0.05, max: 1.0, step: 0.05 });
-  clouds.addField({ type: 'slider', label: 'Scatter Floor', configPath: 'environment.cloud.multiScatterFloor', min: 0, max: 0.8, step: 0.05 });
-  clouds.addField({ type: 'slider', label: 'Detail Str.', configPath: 'environment.cloud.detailStrength', min: 0, max: 0.5, step: 0.01 });
-
-  // Auto-update time display + weather UI sync
-  tab._updateTimeFn = () => {
-    if (!dayNightCycle.paused) {
-      timeSlider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
-      timeVal.textContent = dayNightCycle.getTimeString();
-    }
-    // Reverse sync: WeatherSystem → UI (for auto-weather changes)
-    weatherSelect.value = String(weatherSystem.currentWeather as number);
-    intSlider.value = String(weatherSystem.intensity);
-    intVal.textContent = weatherSystem.intensity.toFixed(2);
-  };
+  clouds.addField({ type: 'slider', label: 'Density', configPath: 'environment.cloud.density', min: 0.1, max: 3, step: 0.1 });
+  clouds.addField({ type: 'slider', label: 'Cloud Base', configPath: 'environment.cloud.cloudBase', min: 100, max: 1000, step: 50 });
+  clouds.addField({ type: 'slider', label: 'Cloud Height', configPath: 'environment.cloud.cloudHeight', min: 50, max: 500, step: 25 });
+  clouds.addField({ type: 'slider', label: 'Detail', configPath: 'environment.cloud.detailStrength', min: 0, max: 1, step: 0.05 });
+  clouds.addField({ type: 'slider', label: 'Wind Speed', configPath: 'environment.cloud.windSpeed', min: 0, max: 50, step: 1 });
+  clouds.addField({ type: 'slider', label: 'Silver Lining', configPath: 'environment.cloud.silverLining', min: 0, max: 3, step: 0.1 });
+  clouds.addField({ type: 'slider', label: 'Multi Scatter', configPath: 'environment.cloud.multiScatterFloor', min: 0, max: 0.5, step: 0.01 });
 
   // Weather section
   const weather = tab.addSection('Weather');
 
-  // Auto Weather toggle
-  const autoRow = document.createElement('div');
-  autoRow.className = 'inspector-field';
-  const autoLabel = document.createElement('div');
-  autoLabel.className = 'inspector-field-label';
-  autoLabel.textContent = 'Auto';
-  const autoControl = document.createElement('div');
-  autoControl.className = 'inspector-field-control';
-  const autoCheck = document.createElement('input');
-  autoCheck.type = 'checkbox';
-  autoCheck.checked = weatherSystem.autoWeather;
-  autoCheck.addEventListener('change', () => {
-    weatherSystem.autoWeather = autoCheck.checked;
-    if (autoCheck.checked) {
+  const auto = createCustomToggle('Auto', weatherSystem.autoWeather, (checked) => {
+    weatherSystem.autoWeather = checked;
+    if (checked) {
       weatherSystem.weatherTimer = 0;
       weatherSystem.weatherDuration = 10 + Math.random() * 30;
     }
   });
-  autoControl.appendChild(autoCheck);
-  autoRow.appendChild(autoLabel);
-  autoRow.appendChild(autoControl);
-  weather.addElement(autoRow);
+  weather.addElement(auto.row);
 
-  // Weather type dropdown (direct control)
-  const weatherRow = document.createElement('div');
-  weatherRow.className = 'inspector-field';
-  const weatherLabel = document.createElement('div');
-  weatherLabel.className = 'inspector-field-label';
-  weatherLabel.textContent = 'Type';
-  const weatherControl = document.createElement('div');
-  weatherControl.className = 'inspector-field-control';
-  const weatherSelect = document.createElement('select');
-  const weatherOptions = [
+  const weatherDrop = createCustomDropdown('Type', [
     { label: 'Clear', value: WeatherType.CLEAR },
     { label: 'Rain', value: WeatherType.RAIN },
     { label: 'Snow', value: WeatherType.SNOW },
-  ];
-  for (const opt of weatherOptions) {
-    const option = document.createElement('option');
-    option.value = String(opt.value);
-    option.textContent = opt.label;
-    weatherSelect.appendChild(option);
-  }
-
-  weatherSelect.addEventListener('change', () => {
+  ], weatherSystem.currentWeather, (v) => {
     weatherSystem.autoWeather = false;
-    autoCheck.checked = false;
-    const type = parseInt(weatherSelect.value) as WeatherType;
+    auto.checkbox.checked = false;
+    const type = parseInt(v) as WeatherType;
     weatherSystem.currentWeather = type;
     if (type === WeatherType.CLEAR) {
       weatherSystem.targetIntensity = 0;
@@ -137,74 +74,31 @@ export function buildEnvironmentTab(dayNightCycle: DayNightCycle, weatherSystem:
       weatherSystem.intensity = 0.7;
     }
   });
+  weather.addElement(weatherDrop.row);
 
-  weatherControl.appendChild(weatherSelect);
-  weatherRow.appendChild(weatherLabel);
-  weatherRow.appendChild(weatherControl);
-  weather.addElement(weatherRow);
-
-  // Intensity slider (direct control)
-  const intRow = document.createElement('div');
-  intRow.className = 'inspector-field';
-  const intLabel = document.createElement('div');
-  intLabel.className = 'inspector-field-label';
-  intLabel.textContent = 'Intensity';
-  const intControl = document.createElement('div');
-  intControl.className = 'inspector-field-control';
-  const intSlider = document.createElement('input');
-  intSlider.type = 'range';
-  intSlider.min = '0';
-  intSlider.max = '1';
-  intSlider.step = '0.05';
-  intSlider.value = String(weatherSystem.intensity);
-  const intVal = document.createElement('span');
-  intVal.className = 'val-display';
-  intVal.textContent = weatherSystem.intensity.toFixed(2);
-
-  intSlider.addEventListener('input', () => {
+  const intensity = createCustomSlider('Intensity', weatherSystem.intensity, 0, 1, 0.05, (v) => {
     weatherSystem.autoWeather = false;
-    autoCheck.checked = false;
-    const v = parseFloat(intSlider.value);
+    auto.checkbox.checked = false;
     weatherSystem.targetIntensity = v;
     weatherSystem.intensity = v;
-    intVal.textContent = v.toFixed(2);
   });
+  weather.addElement(intensity.row);
 
-  intControl.appendChild(intSlider);
-  intControl.appendChild(intVal);
-  intRow.appendChild(intLabel);
-  intRow.appendChild(intControl);
-  weather.addElement(intRow);
-
-  // Transition speed
-  const transRow = document.createElement('div');
-  transRow.className = 'inspector-field';
-  const transLabel = document.createElement('div');
-  transLabel.className = 'inspector-field-label';
-  transLabel.textContent = 'Trans. Speed';
-  const transControl = document.createElement('div');
-  transControl.className = 'inspector-field-control';
-  const transSlider = document.createElement('input');
-  transSlider.type = 'range';
-  transSlider.min = '0.05';
-  transSlider.max = '2';
-  transSlider.step = '0.05';
-  transSlider.value = String(weatherSystem.transitionSpeed);
-  const transVal = document.createElement('span');
-  transVal.className = 'val-display';
-  transVal.textContent = weatherSystem.transitionSpeed.toFixed(2);
-
-  transSlider.addEventListener('input', () => {
-    const v = parseFloat(transSlider.value);
+  const transition = createCustomSlider('Trans. Speed', weatherSystem.transitionSpeed, 0.05, 2, 0.05, (v) => {
     weatherSystem.transitionSpeed = v;
-    transVal.textContent = v.toFixed(2);
   });
+  weather.addElement(transition.row);
 
-  transControl.appendChild(transSlider);
-  transControl.appendChild(transVal);
-  transRow.appendChild(transLabel);
-  transRow.appendChild(transControl);
-  weather.addElement(transRow);
+  // Auto-update time display + weather UI sync
+  tab._updateTimeFn = () => {
+    if (!dayNightCycle.paused) {
+      time.slider.value = String(Math.round(dayNightCycle.timeOfDay * 100));
+      time.display.textContent = dayNightCycle.getTimeString();
+    }
+    weatherDrop.select.value = String(weatherSystem.currentWeather as number);
+    intensity.slider.value = String(weatherSystem.intensity);
+    intensity.display.textContent = weatherSystem.intensity.toFixed(2);
+  };
 
   return tab;
 }

@@ -21,6 +21,7 @@ struct ShadowUniforms {
 @group(0) @binding(4) var shadowSampler: sampler_comparison;
 @group(0) @binding(5) var linearSampler: sampler;
 
+#include "common/constants.wgsl"
 #include "common/phase_functions.wgsl"
 
 // Sample shadow map at world position (simplified, single cascade lookup)
@@ -106,7 +107,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Phase function with dual-lobe HG
   let sunDir = normalize(uniforms.sunDir.xyz);
   let cosTheta = dot(rayDirNorm, sunDir);
-  let phase = dualLobeHG(cosTheta);
+  let phase = max(dualLobeHG(cosTheta), 0.001);
 
   // Fog color variation: warm near sun, cool away from sun (kept dim to avoid over-brightening)
   let warmFogColor = vec3<f32>(0.85, 0.75, 0.55);

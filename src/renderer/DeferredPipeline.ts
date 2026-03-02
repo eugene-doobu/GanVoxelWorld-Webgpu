@@ -8,17 +8,20 @@ import { TAA } from './TAA';
 import { DayNightCycle } from '../world/DayNightCycle';
 import { WeatherSystem, WeatherType } from '../world/WeatherSystem';
 import { Config } from '../config/Config';
-import { SimplexNoise } from '../noise/SimplexNoise';
+
 import {
   GBUFFER_ALBEDO_FORMAT,
   GBUFFER_NORMAL_FORMAT,
   GBUFFER_MATERIAL_FORMAT,
   DEPTH_FORMAT,
   HDR_FORMAT,
+  CLOUD_FORMAT,
   MAX_POINT_LIGHTS,
 } from '../constants';
 import type { PointLight } from '../terrain/ChunkManager';
 
+import { CloudNoiseGenerator } from './CloudNoiseGenerator';
+import { VolumetricClouds } from './VolumetricClouds';
 import { checkShaderCompilation } from './shaderCheck';
 import gbufferVertShader from '../shaders/gbuffer.vert.wgsl?raw';
 import gbufferFragShader from '../shaders/gbuffer.frag.wgsl?raw';
@@ -97,7 +100,10 @@ export class DeferredPipeline {
   // Sky pass
   private skyPipeline!: GPURenderPipeline;
   private skyBindGroupLayout!: GPUBindGroupLayout;
-  private skyBindGroup!: GPUBindGroup | null;
+  private skyBindGroups: {
+    disabled: GPUBindGroup;
+    enabled: [GPUBindGroup, GPUBindGroup];
+  } | null = null;
 
   // Water forward pass
   private waterPipeline!: GPURenderPipeline;
@@ -132,6 +138,11 @@ export class DeferredPipeline {
   private weatherF32 = new Float32Array(WEATHER_UNIFORM_SIZE / 4);
   private weatherSystem: WeatherSystem | null = null;
 
+  // Cloud system
+  private cloudNoiseGen: CloudNoiseGenerator;
+  private volumetricClouds: VolumetricClouds;
+  private clearCloudView!: GPUTextureView; // 1x1 fallback (transmittance=1)
+
   // Cached atlas sampler
   private atlasSampler: GPUSampler | null = null;
 
@@ -151,9 +162,7 @@ export class DeferredPipeline {
   // Frame counter for temporal dithering
   private frameIndex = 0;
 
-  // Coverage noise pre-computed on CPU (avoid 2x snoise3d per pixel on GPU)
-  private coverageNoise1 = new SimplexNoise(42);
-  private coverageNoise2 = new SimplexNoise(43);
+
 
   // Shader compilation checks — collected during construction, awaited in init()
   private shaderChecks: Promise<void>[] = [];
@@ -166,6 +175,9 @@ export class DeferredPipeline {
     this.ssao = new SSAO(ctx);
     this.postProcess = new PostProcess(ctx);
     this.taa = new TAA(ctx);
+    this.cloudNoiseGen = new CloudNoiseGenerator(ctx);
+    this.volumetricClouds = new VolumetricClouds(ctx);
+    this.createClearCloudTexture();
 
     this.createSamplers();
     this.createGBufferPass();
@@ -182,8 +194,16 @@ export class DeferredPipeline {
   async init(): Promise<void> {
     // Collect shader checks from sub-systems
     this.shaderChecks.push(...this.taa.shaderChecks);
+    this.shaderChecks.push(...this.volumetricClouds.shaderChecks);
+    this.shaderChecks.push(this.cloudNoiseGen.shaderCheck);
     await Promise.all(this.shaderChecks);
     this.shaderChecks = [];
+
+    // Generate 3D cloud noise textures (one-time startup)
+    await this.cloudNoiseGen.generate();
+
+    // Pre-cache sky bind groups (1 disabled + 2 ping-pong)
+    this.initSkyBindGroups();
   }
 
   /** Register a shader module for compilation checking. */
@@ -405,6 +425,8 @@ export class DeferredPipeline {
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
       ],
     });
 
@@ -615,6 +637,29 @@ export class DeferredPipeline {
     return tex;
   }
 
+  /** Create 1x1 RGBA16F texture with (0,0,0,1) = fully transparent sky (no cloud). */
+  private createClearCloudTexture(): void {
+    const tex = this.ctx.device.createTexture({
+      size: [1, 1],
+      format: CLOUD_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // RGBA16F: each channel is 2 bytes (Float16). Write (0,0,0,1) = clear sky.
+    const buf = new ArrayBuffer(8);
+    const u16 = new Uint16Array(buf);
+    u16[0] = 0;      // R = 0
+    u16[1] = 0;      // G = 0
+    u16[2] = 0;      // B = 0
+    u16[3] = 0x3C00; // A = 1.0 (f16)
+    this.ctx.device.queue.writeTexture(
+      { texture: tex },
+      buf,
+      { bytesPerRow: 8 },
+      [1, 1],
+    );
+    this.clearCloudView = tex.createView();
+  }
+
   updateCamera(
     viewProj: mat4,
     projection: mat4,
@@ -637,7 +682,7 @@ export class DeferredPipeline {
     if (taaEnabled) {
       const [jx, jy] = this.taa.getJitter(this.ctx.canvas.width, this.ctx.canvas.height);
       const jitteredProj = mat4.clone(projection);
-      // Apply sub-pixel jitter to projection matrix (column-major: [8] = m[2][0], [9] = m[2][1])
+      // mat4 column-major layout: index [8]=[2][0], [9]=[2][1] = projection X/Y translation offset
       (jitteredProj as Float32Array)[8] += jx;
       (jitteredProj as Float32Array)[9] += jy;
       mat4.multiply(jitteredViewProj, jitteredProj, view);
@@ -699,17 +744,12 @@ export class DeferredPipeline {
     new Uint16Array(skyPackBuf)[0] = lo;
     new Uint16Array(skyPackBuf)[1] = hi;
     sceneF32[34] = new Float32Array(skyPackBuf)[0];    // fogParams.z = packed sky params
-    // fogParams.w: cloud coverage with time-varying noise (pre-computed on CPU)
-    const baseCoverage = Config.data.environment.cloud.coverage;
-    const t = this.waterTime;
-    const coverageNoise = this.coverageNoise1.noise3D(t * 0.015, t * 0.007, 0) * 0.25
-                        + this.coverageNoise2.noise3D(t * 0.004, 0, t * 0.003) * 0.15;
-    sceneF32[35] = Math.max(0.05, Math.min(0.9, baseCoverage + coverageNoise));
-    const cloud = Config.data.environment.cloud;
-    sceneF32[36] = cloud.baseNoiseScale;               // cloudParams.x
-    sceneF32[37] = cloud.extinction;                    // cloudParams.y
-    sceneF32[38] = cloud.multiScatterFloor;             // cloudParams.z
-    sceneF32[39] = cloud.detailStrength;                // cloudParams.w
+    // cloudParams: zeroed out (clouds removed, keep struct layout)
+    sceneF32[35] = 0;
+    sceneF32[36] = 0;
+    sceneF32[37] = 0;
+    sceneF32[38] = 0;
+    sceneF32[39] = 0;
     // viewProj (unjittered) at offset 40 (bytes 160-223)
     sceneF32.set(viewProj as Float32Array, 40);
     // contactShadowParams at offset 56 (bytes 224-239)
@@ -833,6 +873,30 @@ export class DeferredPipeline {
     if (taaEnabled) {
       this.taa.updateUniforms(this.unjitteredViewProj);
     }
+
+    // Update volumetric cloud uniforms
+    const cloudCfg = Config.data.environment.cloud;
+    if (cloudCfg.enabled) {
+      this.volumetricClouds.setDepthView(this.gBuffer.depthView);
+      this.volumetricClouds.updateUniforms(
+        this.invVP as Float32Array,
+        cameraPos,
+        lightDir as Float32Array,
+        dnc.trueSunHeight,
+        dnc.sunColor as Float32Array,
+        dnc.sunIntensity,
+        this.waterTime,
+        cloudCfg.coverage,
+        cloudCfg.density,
+        cloudCfg.cloudBase,
+        cloudCfg.cloudHeight,
+        cloudCfg.windSpeed,
+        cloudCfg.detailStrength,
+        cloudCfg.multiScatterFloor,
+        cloudCfg.silverLining,
+      );
+      this.volumetricClouds.updateTemporalUniforms(this.invVP as Float32Array);
+    }
   }
 
   updatePointLights(lights: PointLight[]): void {
@@ -885,6 +949,11 @@ export class DeferredPipeline {
     // 5. SSR Composite -> HDR texture (alpha blended reflections)
     this.postProcess.renderSSR(encoder);
 
+    // 5.5. Volumetric Cloud Ray-march + Temporal -> half-res cloud texture
+    if (Config.data.environment.cloud.enabled) {
+      this.volumetricClouds.render(encoder);
+    }
+
     // 6. Sky Pass -> HDR texture (only sky pixels)
     this.renderSkyPass(encoder);
 
@@ -916,6 +985,9 @@ export class DeferredPipeline {
       this.taa.swapHistory();
       this.taa.storePrevViewProj(this.unjitteredViewProj);
     }
+
+    // Store prevViewProj for cloud temporal reprojection
+    this.volumetricClouds.storePrevViewProj(this.unjitteredViewProj);
 
     // 9.5 Motion Blur (requires TAA velocity buffer)
     if (Config.data.rendering.motionBlur.enabled && Config.data.rendering.taa.enabled) {
@@ -1032,14 +1104,6 @@ export class DeferredPipeline {
       ],
     });
 
-    this.skyBindGroup = this.ctx.device.createBindGroup({
-      layout: this.skyBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.sceneUniformBuffer } },
-        { binding: 1, resource: this.gBuffer.depthView },
-      ],
-    });
-
     // Update volumetric resources (depth + shadow)
     this.postProcess.setVolumetricResources(
       this.gBuffer.depthView,
@@ -1086,6 +1150,28 @@ export class DeferredPipeline {
     ];
   }
 
+  /** Create all 3 sky bind groups: 1 for cloud disabled, 2 for cloud ping-pong. */
+  private initSkyBindGroups(): void {
+    const layout = this.skyBindGroupLayout;
+    const makeGroup = (cloudView: GPUTextureView) => this.ctx.device.createBindGroup({
+      layout,
+      entries: [
+        { binding: 0, resource: { buffer: this.sceneUniformBuffer } },
+        { binding: 1, resource: this.gBuffer.depthView },
+        { binding: 2, resource: cloudView },
+        { binding: 3, resource: this.linearSampler },
+      ],
+    });
+
+    this.skyBindGroups = {
+      disabled: makeGroup(this.clearCloudView),
+      enabled: [
+        makeGroup(this.volumetricClouds.historyViews[0]),
+        makeGroup(this.volumetricClouds.historyViews[1]),
+      ],
+    };
+  }
+
   private renderLightingPass(encoder: GPUCommandEncoder): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -1114,8 +1200,11 @@ export class DeferredPipeline {
       }],
     });
 
+    const skyBG = Config.data.environment.cloud.enabled
+      ? this.skyBindGroups!.enabled[this.volumetricClouds.resolvedHistoryIndex]
+      : this.skyBindGroups!.disabled;
     pass.setPipeline(this.skyPipeline);
-    pass.setBindGroup(0, this.skyBindGroup!);
+    pass.setBindGroup(0, skyBG);
     pass.draw(3);
     pass.end();
   }
@@ -1211,11 +1300,13 @@ export class DeferredPipeline {
     this.ssao.resize();
     this.postProcess.resize();
     this.taa.resize();
+    this.volumetricClouds.resize();
     // Invalidate bind groups
     this.bindGroupsDirty = true;
     this.waterBindGroupDirty = true;
     this.gbufferReadBindGroup = null;
     this.shadowReadBindGroup = null;
-    this.skyBindGroup = null;
+    // Rebuild sky bind groups (gBuffer.depthView and cloud historyViews changed)
+    this.initSkyBindGroups();
   }
 }

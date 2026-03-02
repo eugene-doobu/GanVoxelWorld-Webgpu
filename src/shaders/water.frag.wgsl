@@ -8,6 +8,8 @@
 //   - 하늘/구름 반사(depth>0.999): OK → 하늘 픽셀에는 SSAO 없음
 //   - 수중 Snell's window: OK → 위를 올려다보는 것이므로 정상
 
+#include "common/constants.wgsl"
+
 struct FragUniforms {
   cameraPos: vec3f,
   time: f32,
@@ -219,7 +221,7 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let R = reflect(-V, N);
   let sunReflect = max(dot(R, L), 0.0);
   let specular = frag.sunColor * frag.sunIntensity
-    * (pow(sunReflect, 512.0) * 1.5 + pow(sunReflect, 64.0) * 0.1);
+    * pow(sunReflect, 512.0) * 0.3;
 
   // ==================== Analytical Sky (gradient fallback) ====================
   let skyGradient = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
@@ -258,10 +260,10 @@ fn main(input: FragInput) -> @location(0) vec4f {
   let reflection = mix(envReflection, ssrResult.rgb, ssrResult.a) + specular;
 
   let NdotV = max(dot(N, V), 0.0);
-  let F0 = 0.04;
+  let F0 = F0_DIELECTRIC;
   let fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
   let depthBoost = smoothstep(0.0, 3.0, waterDepth) * 0.15;
-  let finalFresnel = clamp(fresnel + depthBoost, 0.0, 0.85);
+  let finalFresnel = clamp(fresnel + depthBoost, 0.0, 0.40);
   var aboveColor = mix(refraction, reflection, finalFresnel);
 
   // Edge foam
