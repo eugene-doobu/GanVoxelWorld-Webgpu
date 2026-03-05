@@ -8,6 +8,8 @@
 A WebGPU-powered voxel terrain rendering engine built with TypeScript and WGSL.
 Focused on **rendering quality** and **visual effects** -- not gameplay.
 
+[![YouTube](https://img.youtube.com/vi/eubqsKFgO3M/maxresdefault.jpg)](https://youtu.be/eubqsKFgO3M)
+
 ## Features
 
 ### Rendering Pipeline
