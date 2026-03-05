@@ -8,7 +8,20 @@
 A WebGPU-powered voxel terrain rendering engine built with TypeScript and WGSL.
 Focused on **rendering quality** and **visual effects** -- not gameplay.
 
+> **Browser Compatibility**: WebGPU is required. Use **Chrome 113+** or **Edge 113+**. Firefox and Safari do not yet have stable WebGPU support.
+
 [![YouTube](https://img.youtube.com/vi/eubqsKFgO3M/maxresdefault.jpg)](https://youtu.be/eubqsKFgO3M)
+
+## Why This Project?
+
+Most voxel engines prioritize gameplay mechanics. This project takes the opposite approach: **treat voxel terrain as a canvas for modern real-time rendering techniques**.
+
+- Implements a full **deferred rendering pipeline** from scratch in a browser, using the new WebGPU API
+- Combines techniques typically found in AAA engines -- PCSS shadows, SSAO, SSR, TAA, volumetric clouds -- all in WGSL
+- Designed as a **learning reference**: every system is documented with design rationale in `docs/`
+- Zero dependencies beyond `gl-matrix` and Vite -- no rendering framework, no engine abstraction
+
+If you want to understand how a modern rendering pipeline is assembled piece by piece, this codebase is meant to show you.
 
 ## Features
 
@@ -57,9 +70,11 @@ Focused on **rendering quality** and **visual effects** -- not gameplay.
 
 ## Requirements
 
-- **Browser**: Chrome 113+ / Edge 113+ (WebGPU required)
-- **GPU**: Any GPU with WebGPU support
-- **Node.js**: 18+ (for development)
+| | Requirement |
+|---|---|
+| **Browser** | Chrome 113+ or Edge 113+ (**WebGPU required** -- Firefox/Safari not supported) |
+| **GPU** | Any GPU with WebGPU driver support (integrated GPUs work) |
+| **Node.js** | 18+ (for local development only) |
 
 ## Getting Started
 
@@ -117,12 +132,14 @@ src/
 +-- terrain/
 |   +-- ChunkManager.ts      # Chunk loading, unloading, and draw call management
 |   +-- Chunk.ts             # Single chunk data structure with compression
+|   +-- BlockTypes.ts        # Block type enum and material properties
 |   +-- TerrainGenerator.ts  # Simplex noise heightmap generation
 |   +-- BiomeTypes.ts        # Biome definitions
 |   +-- CaveGenerator.ts     # Cave carving
 |   +-- OreGenerator.ts      # Ore vein placement
 |   +-- TreeGenerator.ts     # Tree structure generation
 |   +-- VegetationGenerator.ts # Grass, flowers (cross-mesh billboards)
+|   +-- VillageGenerator.ts  # Village structure placement
 |   \-- WaterSimulator.ts    # Water level and flow
 |
 +-- meshing/
@@ -158,6 +175,14 @@ The **Config** system (`src/config/Config.ts`) acts as a centralized reactive st
 
 WGSL shaders use a custom `#include` preprocessor (handled by Vite's `?raw` imports and string concatenation) to share common code like noise functions, scene uniforms, and phase functions.
 
+## Known Limitations
+
+- **No multiplayer / server-side logic** -- purely client-side rendering engine
+- **No runtime block editing** -- terrain is generated once; the focus is rendering, not gameplay
+- **WebGPU only** -- no WebGL fallback; requires Chrome 113+ or Edge 113+
+- **High VRAM usage** -- mega buffer and 3D cloud noise textures can use 500 MB+ on large render distances
+- **Single-threaded JS** -- chunk meshing runs on the main thread; very large worlds may cause frame stutters during generation
+
 ## Tech Stack
 
 | Category | Technology |
@@ -180,6 +205,7 @@ Detailed design documents are available in the `docs/` directory:
 - **[`docs/reference/`](./docs/reference/)** -- Technical reference
   - [Voxel Rendering Pipeline](./docs/reference/voxel-rendering-pipeline.md)
   - [Voxel Optimization](./docs/reference/voxel-optimization.md)
+  - [Chunk Compression](./docs/reference/chunk-compression.md)
   - [Biome System](./docs/reference/biome-system.md)
   - [Noise Reference](./docs/reference/noise-reference.md)
   - [Alpha Cutout](./docs/reference/alpha-cutout.md)
