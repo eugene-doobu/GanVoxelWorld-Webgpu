@@ -10,6 +10,8 @@ Focused on **rendering quality** and **visual effects** -- not gameplay.
 
 > **Browser Compatibility**: WebGPU is required. Use **Chrome 113+** or **Edge 113+**. Firefox and Safari do not yet have stable WebGPU support.
 
+[Live Demo](https://eugene-doobu.github.io/GanVoxelWorld-Webgpu/) | [Video Preview](https://youtu.be/eubqsKFgO3M)
+
 [![YouTube](https://img.youtube.com/vi/eubqsKFgO3M/maxresdefault.jpg)](https://youtu.be/eubqsKFgO3M)
 
 ## Why This Project?
@@ -93,6 +95,12 @@ Open [http://localhost:5173](http://localhost:5173) in a WebGPU-capable browser.
 npm run build
 npm run preview
 ```
+
+### Deploy to GitHub Pages
+
+Push to `main` and GitHub Actions will build `dist/` and deploy it to Pages automatically.
+
+If this is the first deployment, set **Settings > Pages > Build and deployment > Source** to **GitHub Actions**.
 
 ## Controls
 
